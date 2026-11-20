@@ -32,6 +32,8 @@ def add_parser(sub, add_run_args):
                         "computer, starting with playback")
     p.add_argument("--music-offset", type=float, default=0.0, metavar="S",
                    help="shift the music start: positive = later, negative = earlier (audio latency)")
+    p.add_argument("--allow-stance-asym", action="store_true",
+                   help="run even if the feet start staggered (stance gate); logged")
     p.add_argument("--stage", required=True, choices=["acquire", "entry", "playback", "full", "recover"])
     p.add_argument("--backend", choices=["sim", "unitree"], default="sim")
     p.add_argument("--iface", help="robot network interface (unitree backend)")
@@ -100,6 +102,22 @@ def run(a):
     if variant.waist_roll_pitch_actuated is False and not cfg.hold_waist and (
             cfg.scales.waist_roll != 0 or cfg.scales.waist_pitch != 0):
         raise SystemExit("waist roll/pitch are locked on this variant: use --waist-roll 0 --waist-pitch 0 or --hold-waist")
+
+    stance_info = None
+    if a.stage in ("entry", "playback", "full"):
+        from .check import stance_gate
+        import time as _t
+        legs = []
+        for _ in range(25):  # median over ~0.5 s of state
+            legs.append(np.degrees(backend.read_state().q[:12]))
+            if live:
+                _t.sleep(0.02)
+        ok, msg = stance_gate(np.median(legs, axis=0), cfg.gates.stance_asym_deg)
+        stance_info = {"passed": ok, "message": msg, "overridden": bool(a.allow_stance_asym and not ok)}
+        print(("stance gate PASS: " if ok else "stance gate FAIL: ") + msg)
+        if not ok and not a.allow_stance_asym:
+            raise SystemExit("feet look staggered: Unitree stepped in runs that started like this. Re-stand the "
+                             "robot from the remote and try again (or pass --allow-stance-asym to override).")
 
     start = st.upper_q.copy()
     beat = setup_beat_grid(cfg, a, ref.duration) if a.stage in ("playback", "full") else None
@@ -180,6 +198,8 @@ def run(a):
         extra["control_overruns"] = backend.overruns
     if music_info:
         extra["music"] = music_info
+    if stance_info:
+        extra["stance_gate"] = stance_info
     write_run(run_dir, result, cfg, extra)
     bar = "=" * 78
     if not result.handed_back:

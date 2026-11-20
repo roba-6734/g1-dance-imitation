@@ -126,3 +126,20 @@ def test_leg_stance_check_flags_staggered_feet():
     c = leg_stance_checks(bad, refv)
     assert lv(c) == ["INFO", "WARN"] and "right_ankle_pitch_joint" in c[1]["msg"]
     assert lv(leg_stance_checks(bad)) == ["INFO"]  # no reference: report only
+
+
+def test_stance_gate_on_hardware_starts():
+    from g1dance.hw.check import stance_gate
+
+    def legs(hip_lr, ankle_lr, knee_lr=1.0):
+        q = np.array([-20.0, -1.5, 1.0, 35.0, -17.0, 1.5, -20.0, 1.2, -0.8, 35.0, -17.0, -0.3])
+        q[0] += hip_lr
+        q[3] += knee_lr
+        q[4] += ankle_lr
+        return q
+    assert stance_gate(legs(0.6, -1.7, 2.4), 1.8)[0]  # 162841: passed dance t=8 s cleanly
+    assert stance_gate(legs(0.9, -1.0), 1.8)[0]  # 144014: clean at 1.5:5.0
+    assert not stance_gate(legs(2.8, -3.5, 2.5), 1.8)[0]  # 173855: stepped at 8.2 s
+    assert not stance_gate(legs(2.0, -1.8), 1.8)[0]  # 144601: stepped at the lean
+    assert stance_gate(legs(5.0, 5.0), 0.0)[0]  # 0 disables
+    assert "hip +0.6" in stance_gate(legs(0.6, -1.7), 1.8)[1]

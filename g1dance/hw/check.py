@@ -32,6 +32,21 @@ def add_parser(sub):
     p.set_defaults(fn=run)
 
 
+def stance_asymmetry(leg_deg) -> dict[str, float]:
+    """left - right (deg) for hip pitch, knee and ankle pitch (SDK leg order, 12 values)."""
+    leg_deg = np.asarray(leg_deg, float)
+    return {n: round(float(leg_deg[l] - leg_deg[r]), 2) for l, r, n in PITCH_CHAIN}
+
+
+def stance_gate(leg_deg, limit_deg: float) -> tuple[bool, str]:
+    """Pre-run gate on the staggered-feet signature (hip and ankle pitch)."""
+    asym = stance_asymmetry(leg_deg)
+    worst = max(abs(asym["hip_pitch"]), abs(asym["ankle_pitch"]))
+    ok = limit_deg <= 0 or worst <= limit_deg
+    return ok, (f"leg stance left-minus-right (deg): hip {asym['hip_pitch']:+.1f}, knee {asym['knee']:+.1f}, "
+                f"ankle {asym['ankle_pitch']:+.1f}; limit |hip|,|ankle| <= {limit_deg:.1f}")
+
+
 def leg_stance_checks(leg_deg, leg_ref_deg=None, tol_deg=LEG_TOL_DEG):
     """Read-only comparison of the leg posture (12 values, deg, SDK order). Returns check dicts."""
     leg_deg = np.asarray(leg_deg, float)

@@ -53,10 +53,12 @@ class Timing:
     release_hold_s: float = 0.5
     release_s: float = 2.0  # weight 1 -> 0 while commanding the measured start pose
     # After a leg_step stop: hold the measured pose until the legs are quiet
-    # (all leg |dq| < leg_step_dq/2 for step_quiet_s, at most step_hold_max_s), then
+    # (all leg |dq| < leg_step_dq/2 for step_quiet_s, at most step_hold_max_s; was 4 s,
+    # but in 20261120_173855 the legs were still stepping after 4 s and the arm return
+    # made it worse), then
     # return to start step_return_slowdown x slower than a normal abort.
     step_quiet_s: float = 1.0
-    step_hold_max_s: float = 4.0
+    step_hold_max_s: float = 10.0
     step_return_slowdown: float = 1.5
     # Link loss (rt/lowstate stale): keep publishing the last command and wait this
     # long for the state to come back (fresh for link_restore_s), then return to the
@@ -172,6 +174,11 @@ class Gates:
     # step seen so far exceeded 2.2 rad/s. 0 disables. See FINDINGS 4k-4q.
     leg_step_dq: float = 1.5
     leg_step_ticks: int = 2
+    # Pre-run stance gate (read-only): |left - right| of hip pitch and of ankle pitch must
+    # be at most this before entry/playback/full. Runs that did not step started at
+    # <= 0.9 deg hip / <= 1.7 deg ankle; runs that stepped early or at the 8 s / lean
+    # passages started at >= 2.0 deg hip or >= 3.4 deg ankle (FINDINGS 4ad). 0 disables.
+    stance_asym_deg: float = 1.8
 
     def track_vector(self) -> np.ndarray:
         v = np.full(N_UPPER, float(self.track_arm))

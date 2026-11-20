@@ -58,3 +58,6 @@ state_timeout_s = 0.10
 # Set to 0 to disable.
 leg_step_dq = 1.5
 leg_step_ticks = 2
+# Refuse entry/playback/full if the feet start staggered: |left-right| hip pitch or
+# ankle pitch above this (deg). Clean starts <= 1.7, stepping starts >= 2.0 (FINDINGS 4ad).
+stance_asym_deg = 1.8
