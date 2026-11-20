@@ -138,3 +138,35 @@ def test_music_file_natural_speed_trimmed_normalised(ref, tmp_path):
                          capture_output=True, text=True).stderr
     mean = float(vol.split("mean_volume:")[1].split("dB")[0])
     assert mean > -25  # normalised up from a -40 dB source
+
+
+def test_beat_aligned_plan_lands_key_moves_on_the_song_grid(ref):
+    """Synthetic song: clicks at 90 BPM. Key moves must land on beats/half-beats of the
+    song as it will be played (natural speed, started with the planned delay)."""
+    import subprocess
+    from types import SimpleNamespace
+    from g1dance.beats import beat_grid
+    cfg = load_config(ROOT / "configs" / "default.toml")
+    cfg.speed.ramp_in_s = 0.3
+    cfg.speed.max_torque_nm, cfg.speed.max_force_n = 1.2, 4.1
+    cfg.speed.smooth_hz = 1.5
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        song = f"{d}/clicks.wav"
+        # 90 BPM clicks, first click at 0.25 s
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        "aevalsrc='if(lt(mod(t-0.25+10*0.6667,0.6667),0.03),sin(2*PI*1000*t),0)':s=22050:d=60",
+                        song], check=True)
+        g = beat_grid(song, 0.0, 50.0)
+        assert abs(g.period_s - 60 / 90) < 0.005 and abs(g.first_beat_s - 0.25) < 0.02
+        cfg.speed.beat_period_s = g.period_s
+        p = build_plan(ref, _start(), cfg)
+    L = p.load_limit
+    assert L["within_limits"] and L["accents_on_grid"] >= 0.6 * L["accents"]
+    delay = (L["beat_grid_phase_s"] - g.first_beat_s) % g.period_s
+    pb = p.segment("playback")
+    wall = np.interp(L["anchors_dance_t"], pb.t_ref, np.arange(len(pb.t_ref)) * p.dt)
+    song_t = wall - delay - g.first_beat_s  # time since the first song beat
+    half = g.period_s / 2
+    err = np.abs(((song_t + half / 2) % half) - half / 2)
+    assert err.max() < 0.03  # every anchored move within 30 ms of a beat or half-beat

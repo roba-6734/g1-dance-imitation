@@ -54,6 +54,9 @@ def add_run_args(p: argparse.ArgumentParser):
                    help="start this many seconds into the song")
     p.add_argument("--music-stretch", action="store_true",
                    help="time-stretch the song to the dance tempo (needs a constant tempo); default: natural speed")
+    p.add_argument("--beat-align", action="store_true",
+                   help="with --max-load and --music-file: warp the timing so the dance's key moves land on the "
+                        "song's beats (within the load limit); the song plays at natural speed")
     p.add_argument("--smooth", type=float, metavar="HZ",
                    help="low-pass the dance before planning (e.g. 2 or 3 Hz); removes jitter, lowers the arm load")
     p.add_argument("--out", default=str(ROOT / "runs"))
@@ -86,6 +89,22 @@ def resolve_config(a) -> RunConfig:
     return cfg
 
 
+def setup_beat_grid(cfg: RunConfig, a, ref_duration: float):
+    """For --beat-align: track the song's beats and give the period to the planner."""
+    if not getattr(a, "beat_align", False):
+        return None
+    if not a.music_file:
+        raise SystemExit("--beat-align needs --music-file (the song to align to)")
+    if not (cfg.speed.max_torque_nm or cfg.speed.max_force_n):
+        raise SystemExit("--beat-align needs --max-load")
+    from .beats import beat_grid
+    grid = beat_grid(Path(a.music_file), a.music_start, ref_duration / 0.5 + 5.0)
+    cfg.speed.beat_period_s = grid.period_s
+    print(f"beat grid: {grid.bpm:.2f} BPM, first beat {grid.first_beat_s:.3f}s after --music-start, "
+          f"strength x{grid.strength:.2f}")
+    return grid
+
+
 def print_load_limit(plan):
     L = plan.load_limit
     if not L:
@@ -95,7 +114,11 @@ def print_load_limit(plan):
           f"min tempo {L['min_tempo']} at dance t={L['min_tempo_dance_t']} s, within limits: {L['within_limits']}")
     print(f"  peak load planned:  pitch {pk['pitch_nm']} roll {pk['roll_nm']} N m, force {pk['force_n']} N "
           f"(at recorded tempo: pitch {p1['pitch_nm']} roll {p1['roll_nm']} N m, force {p1['force_n']} N)")
-    if L.get("constant_tempo"):
+    if L.get("beat_aligned"):
+        print(f"  beat-aligned: {L['accents_on_grid']}/{L['accents']} key moves on the grid "
+              f"({L['accents_on_full_beat']} on full beats), tempo {L['tempo_range'][0]}-{L['tempo_range'][1]}, "
+              f"timing residual {L['accent_timing_residual_max_s']}s")
+    elif L.get("constant_tempo"):
         print(f"  constant tempo {L['music_tempo']} for the whole dance")
     else:
         print("  slowed passages [dance t0, t1, min tempo]: " + ", ".join(str(x) for x in L["slowed_passages"]))
@@ -201,6 +224,7 @@ def cmd_preview(a):
         start_src = "ASSUMED stance (Menagerie 'stand' arms); live runs use the measured pose"
     backend = SimBackend(start_in, cfg.timing.control_dt)
     start = backend.read_state().upper_q
+    beat = setup_beat_grid(cfg, a, ref.duration)
     plan = build_plan(ref, start, cfg)
     result = execute(plan, backend, cfg, Monitor(cfg.gates))
     tag = a.tag or "preview"
@@ -228,7 +252,7 @@ def cmd_preview(a):
             from .music import plan_music
             try:
                 wav, delay, minfo = plan_music(plan, a.music_file, assets / VIDEO_FILE, run_dir / "music",
-                                               a.music_start, a.music_stretch)
+                                               a.music_start, a.music_stretch, beat)
                 audio = float(log["t"][pb[0]]) + delay
                 print(f"music: {minfo['source']} (stretched to {minfo['stretched_to_tempo']}), "
                       f"from {a.music_start:.1f}s into the song")

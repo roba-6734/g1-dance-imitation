@@ -72,12 +72,29 @@ class RunLog:
                 f.write(json.dumps(e, default=float) + "\n")
 
 
+class OperatorStop:
+    """Ctrl-C counter: truthy once pressed; ``presses()`` lets a wait notice a NEW press."""
+
+    def __init__(self):
+        self.n = 0
+
+    def press(self, *_):
+        self.n += 1
+
+    def presses(self) -> int:
+        return self.n
+
+    def __call__(self) -> bool:
+        return self.n > 0
+
+
 @dataclass
 class RunResult:
     completed: bool
     stop: Stop | None
     log: RunLog
     gate: dict | None
+    handed_back: bool = True  # False: link lost, the robot may still be under arm control
 
 
 def execute(plan: Plan, backend: Backend, cfg: RunConfig, monitor: Monitor,
@@ -118,7 +135,7 @@ def execute(plan: Plan, backend: Backend, cfg: RunConfig, monitor: Monitor,
     def _abort_notify(*args, **kw):
         if on_phase is not None:
             on_phase("abort")
-        return _abort(*args, **kw)
+        return _abort(*args, operator_stop=operator_stop, **kw)
 
     names = [s.name for s in plan.segments]
     for si, seg in enumerate(plan.segments):
@@ -206,61 +223,114 @@ def _hold_until(confirm, q, tick):
     return box.get("ok", False), []
 
 
-def _abort(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info) -> RunResult:
+def _abort(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info, operator_stop=None) -> RunResult:
     """Hold where the robot is, return slowly to the start pose, release.
 
     During the abort return ONLY state freshness and joint speed are checked
     (tracking/waist/IMU gates would re-trigger on the very fault being
-    handled). This is logged explicitly. A second fault releases immediately.
+    handled). This is logged explicitly. A joint-speed fault during the return
+    releases immediately. A stale state (link loss) at any point holds the last
+    command and waits for the link (``_await_link``); the result says whether
+    control was actually handed back.
     """
     for s in stops:
         log.event("stop", **s.as_dict())
     first = stops[0]
-    dt = cfg.timing.control_dt
+    ctx = (plan, backend, cfg, monitor, log, kp, kd, t0, operator_stop)
     if first.check == "state_freshness":
-        log.event("abort", action="state stale: ramping weight to 0 holding last command")
-        _release(backend, log, np.array(log.q_cmd[-1]), cfg, kp, kd, t0, monitor_only=None)
-        return RunResult(False, first, log, gate_info)
-    st = backend.read_state()
-    q_here = st.upper_q.copy()
+        if not _await_link(backend, cfg, log, kp, kd, t0, np.array(log.q_cmd[-1]), float(log.weight[-1]),
+                           operator_stop):
+            return RunResult(False, first, log, gate_info, handed_back=False)
     log.event("abort", action="hold measured pose, return to start (tracking/waist/IMU gates off; "
                               "freshness+speed gates on), then release")
+    slowdown, pre_hold = 1.0, True
+    if any(s.check == "leg_step" for s in stops):
+        r = _hold_while_stepping(backend.read_state().upper_q.copy(), *ctx)
+        if r is not None:
+            return RunResult(False, first, log, gate_info, handed_back=(r == "released"))
+        slowdown, pre_hold = cfg.timing.step_return_slowdown, False
+    ok = _return_and_release(*ctx, slowdown=slowdown, pre_hold=pre_hold)
+    return RunResult(False, first, log, gate_info, handed_back=ok)
+
+
+def _return_and_release(plan, backend, cfg, monitor, log, kp, kd, t0, operator_stop,
+                        slowdown=1.0, pre_hold=True) -> bool:
+    """Min-jerk from the MEASURED pose to the start, then release. True if handed back."""
+    dt = cfg.timing.control_dt
+    q_here = backend.read_state().upper_q.copy()
     v = np.full(N_UPPER, cfg.timing.entry_arm_vel)
     v[:3] = cfg.timing.entry_waist_vel
-    T = min_jerk_duration(plan.start - q_here, v, cfg.timing.return_min_s)
-    if any(s.check == "leg_step" for s in stops):
-        stepped = _hold_while_stepping(q_here, backend, cfg, monitor, log, kp, kd, t0)
-        if stepped is not None:  # a second fault during the hold
-            return RunResult(False, first, log, gate_info)
-        q_here = backend.read_state().upper_q.copy()
-        T = min_jerk_duration(plan.start - q_here, v, cfg.timing.return_min_s) * cfg.timing.step_return_slowdown
-        log.event("abort", action=f"legs quiet: returning to start over {T:.1f}s (slowed x{cfg.timing.step_return_slowdown})")
-        path = min_jerk(q_here, plan.start, max(1, int(round(T / dt))))
-    else:
-        path = np.concatenate([np.repeat(q_here[None], int(0.5 / dt), 0),
-                               min_jerk(q_here, plan.start, max(1, int(round(T / dt))))])
+    T = min_jerk_duration(plan.start - q_here, v, cfg.timing.return_min_s) * slowdown
+    if slowdown != 1.0:
+        log.event("abort", action=f"returning to start over {T:.1f}s (slowed x{slowdown})")
+    path = min_jerk(q_here, plan.start, max(1, int(round(T / dt))))
+    if pre_hold:
+        path = np.concatenate([np.repeat(q_here[None], int(0.5 / dt), 0), path])
     for q in path:
         s2 = backend.read_state()
         now = backend.now()
         log.record(now - t0, "return", None, q, 1.0, s2)
         sec = [x for x in monitor.check(s2, q, 1.0, "return", now - t0, now, tracking=False)
                if x.check in ("state_freshness", "joint_speed")]
+        for s in sec:
+            log.event("stop", **s.as_dict())
+        if any(x.check == "state_freshness" for x in sec):
+            if not _await_link(backend, cfg, log, kp, kd, t0, q, 1.0, operator_stop):
+                return False
+            return _return_and_release(plan, backend, cfg, monitor, log, kp, kd, t0, operator_stop, slowdown)
         if sec:
-            for s in sec:
-                log.event("stop", **s.as_dict())
             log.event("abort", action="second fault: immediate release")
-            _release(backend, log, s2.upper_q.copy(), cfg, kp, kd, t0)
-            return RunResult(False, first, log, gate_info)
+            return _release(backend, log, s2.upper_q.copy(), cfg, kp, kd, t0, operator_stop)
         backend.send(q, kp, kd, 1.0)
         backend.wait_tick()
-    _release(backend, log, plan.start, cfg, kp, kd, t0)
-    return RunResult(False, first, log, gate_info)
+    return _release(backend, log, plan.start, cfg, kp, kd, t0, operator_stop)
 
 
-def _hold_while_stepping(q_hold, backend, cfg, monitor, log, kp, kd, t0):
+def _await_link(backend, cfg, log, kp, kd, t0, q_hold, w_hold, operator_stop=None) -> bool:
+    """rt/lowstate went stale. Keep publishing the last command (harmless if the
+    link is down; keeps the robot held where it is if it comes back) and wait for
+    the state to be fresh again for link_restore_s. Returns True when restored.
+    On timeout or operator stop, stops publishing and returns False: the firmware
+    keeps holding the last command, so the arms stay under arm_sdk control."""
+    tm = cfg.timing
+    dt = tm.control_dt
+    need = max(1, int(round(tm.link_restore_s / dt)))
+    max_ticks = max(1, int(round(tm.link_wait_s / dt)))
+    log.event("link_wait", action=f"robot state stale: holding last command (weight {w_hold:.2f}) and waiting up to "
+                                  f"{tm.link_wait_s:.0f}s for the link; Ctrl-C gives up")
+    presses = getattr(operator_stop, "presses", None)
+    p0 = presses() if presses else (bool(operator_stop()) if operator_stop else False)
+    fresh = 0
+    for i in range(max_ticks):
+        st = backend.read_state()
+        now = backend.now()
+        log.record(now - t0, "link_wait", None, q_hold, w_hold, st)
+        fresh = fresh + 1 if (now - st.stamp) <= cfg.gates.state_timeout_s else 0
+        if fresh >= need:
+            log.event("link_restored", after_s=round((i + 1) * dt, 2))
+            return True
+        if operator_stop is not None:
+            # only a Ctrl-C pressed AFTER waiting began gives up (the one that started an abort is already counted)
+            if (presses() > p0) if presses else (operator_stop() and not p0):
+                log.event("link_wait", action="operator gave up waiting")
+                break
+        if i and i % int(round(5.0 / dt)) == 0:
+            log.event("link_wait", action=f"still no robot state after {i * dt:.0f}s")
+        try:
+            backend.send(q_hold, kp, kd, w_hold)
+        except Exception as e:  # pragma: no cover - publisher errors while the link is down
+            log.event("link_wait", action=f"send failed: {e}")
+        backend.wait_tick()
+    log.event("link_lost", handed_back=False,
+              action="gave up waiting; publishing stopped. The firmware holds the last command: "
+                     "the robot may still be under arm control. Run the recover stage.")
+    return False
+
+
+def _hold_while_stepping(q_hold, plan, backend, cfg, monitor, log, kp, kd, t0, operator_stop):
     """Hold the arms still while Unitree's balance controller finishes stepping.
-    Returns None when the legs are quiet (or the hold times out), or a Stop if a
-    second fault (freshness / joint speed) forced an immediate release."""
+    Returns None when the legs are quiet (or the hold times out), "released" if a
+    joint-speed fault forced an immediate release, or "lost" if the link was lost."""
     dt = cfg.timing.control_dt
     quiet_need = max(1, int(round(cfg.timing.step_quiet_s / dt)))
     max_ticks = max(1, int(round(cfg.timing.step_hold_max_s / dt)))
@@ -273,12 +343,16 @@ def _hold_while_stepping(q_hold, backend, cfg, monitor, log, kp, kd, t0):
         log.record(now - t0, "return", None, q_hold, 1.0, s2)
         sec = [x for x in monitor.check(s2, q_hold, 1.0, "return", now - t0, now, tracking=False)
                if x.check in ("state_freshness", "joint_speed")]
+        for s in sec:
+            log.event("stop", **s.as_dict())
+        if any(x.check == "state_freshness" for x in sec):
+            if not _await_link(backend, cfg, log, kp, kd, t0, q_hold, 1.0, operator_stop):
+                return "lost"
+            continue
         if sec:
-            for s in sec:
-                log.event("stop", **s.as_dict())
             log.event("abort", action="second fault: immediate release")
-            _release(backend, log, s2.upper_q.copy(), cfg, kp, kd, t0)
-            return sec[0]
+            _release(backend, log, s2.upper_q.copy(), cfg, kp, kd, t0, operator_stop)
+            return "released"
         v, _ = monitor.leg_speed(s2)
         quiet = quiet + 1 if abs(v) < 0.5 * cfg.gates.leg_step_dq else 0
         backend.send(q_hold, kp, kd, 1.0)
@@ -290,19 +364,28 @@ def _hold_while_stepping(q_hold, backend, cfg, monitor, log, kp, kd, t0):
     return None
 
 
-def _release(backend, log, q, cfg, kp, kd, t0, monitor_only=None):
+def _release(backend, log, q, cfg, kp, kd, t0, operator_stop=None) -> bool:
+    """Ramp the weight 1 -> 0 commanding q. Waits for the link if the state goes
+    stale. True if the full ramp was sent with a live link."""
     n = max(1, int(round(cfg.timing.release_s / cfg.timing.control_dt)))
     for w in np.linspace(1.0, 0.0, n + 1)[1:]:
         st = backend.read_state()
+        now = backend.now()
+        if now - st.stamp > cfg.gates.state_timeout_s:
+            log.event("stop", check="state_freshness", subject="rt/lowstate age", value=float(now - st.stamp),
+                      threshold=cfg.gates.state_timeout_s, unit="s", phase="release")
+            if not _await_link(backend, cfg, log, kp, kd, t0, q, float(w), operator_stop):
+                return False
         log.record(backend.now() - t0, "release", None, q, float(w), st)
         backend.send(q, kp, kd, float(w))
         backend.wait_tick()
     log.event("released", handed_back=True)
+    return True
 
 
 def write_run(run_dir: Path, result: RunResult, cfg: RunConfig, extra: dict):
     result.log.save(run_dir)
-    summary = {"completed": result.completed, "data_kind": result.log.data_kind,
+    summary = {"completed": result.completed, "handed_back": result.handed_back, "data_kind": result.log.data_kind,
                "stop": None if result.stop is None else result.stop.as_dict(),
                "entry_gate": result.gate, **extra}
     with open(run_dir / "settings.json", "w") as f:

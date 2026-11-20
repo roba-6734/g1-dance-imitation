@@ -58,7 +58,7 @@ def _ask(prompt: str, expect: str) -> bool:
 
 
 def run(a):
-    from ..cli import print_load_limit, print_settings, resolve_config
+    from ..cli import print_load_limit, print_settings, resolve_config, setup_beat_grid
     from ..metrics import kinematic_report, run_report
     from ..monitor import Monitor
     from ..planner import build_acquire_only_plan, build_entry_only_plan, build_plan, build_recover_plan
@@ -102,6 +102,7 @@ def run(a):
         raise SystemExit("waist roll/pitch are locked on this variant: use --waist-roll 0 --waist-pitch 0 or --hold-waist")
 
     start = st.upper_q.copy()
+    beat = setup_beat_grid(cfg, a, ref.duration) if a.stage in ("playback", "full") else None
     if a.stage == "recover":
         if not a.to_stance:
             raise SystemExit("--stage recover needs --to-stance runs/stance.json")
@@ -133,7 +134,7 @@ def run(a):
         from ..music import MusicPlayer, plan_music
         from ..reference import VIDEO_FILE
         wav, delay, music_info = plan_music(plan, a.music_file, Path(a.assets) / VIDEO_FILE, Path(a.out) / "music",
-                                            a.music_start, a.music_stretch)
+                                            a.music_start, a.music_stretch, beat)
         player = MusicPlayer(wav, delay + a.music_offset)
         music_info["operator_offset_s"] = a.music_offset
         print(f"music: {Path(music_info['source']).name} -> {wav.name}, starts {delay + a.music_offset:+.3f}s "
@@ -151,13 +152,14 @@ def run(a):
             confirm = lambda: _ask("Opening pose reached and gate passed. Type 'go' to play: ", "go")
         # sim: no pause
 
-    stop_flag = {"v": False}
-    old = signal.signal(signal.SIGINT, lambda *_: stop_flag.__setitem__("v", True))
+    from ..runner import OperatorStop
+    op_stop = OperatorStop()
+    old = signal.signal(signal.SIGINT, op_stop.press)
     try:
         result = execute(plan, backend, cfg, Monitor(cfg.gates, variant.waist_roll_pitch_actuated is not False),
                          confirm_playback=confirm,
                          waist_roll_pitch_actuated=variant.waist_roll_pitch_actuated is not False,
-                         operator_stop=lambda: stop_flag["v"],
+                         operator_stop=op_stop,
                          on_phase=player.on_phase if player else None)
     finally:
         signal.signal(signal.SIGINT, old)
@@ -180,6 +182,18 @@ def run(a):
         extra["music"] = music_info
     write_run(run_dir, result, cfg, extra)
     bar = "=" * 78
+    if not result.handed_back:
+        bang = "!" * 78
+        print(f"{bang}\nRESULT: LINK LOST - CONTROL WAS NOT HANDED BACK\n"
+              f"  {result.stop.message() if result.stop else ''}\n"
+              "  The robot stopped reporting its state and did not come back in time.\n"
+              "  The firmware keeps holding the LAST arm command: the arms/waist may still be\n"
+              "  under arm_sdk control (frozen). Do NOT switch modes or damp while frozen.\n"
+              "  Restore the cable/network, then run:\n"
+              f"    .venv/bin/python -m g1dance trial --stage recover --to-stance runs/stance.json "
+              f"--backend unitree --iface {a.iface} --enable-motion\n{bang}")
+        print(f"run dir: {run_dir}")
+        return 4
     if result.completed:
         print(f"{bar}\nRESULT: COMPLETED + handed back\n{bar}")
     else:

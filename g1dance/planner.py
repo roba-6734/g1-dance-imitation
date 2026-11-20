@@ -13,7 +13,7 @@ from .config import RunConfig
 from .joints import N_UPPER, POS_LOWER, POS_UPPER, UPPER_NAMES
 from .reference import UpperReference
 
-PHASES = ("acquire", "entry", "settle", "playback", "end_hold", "return", "release")
+PHASES = ("acquire", "entry", "settle", "playback", "end_hold", "return", "release", "link_wait")
 
 
 def min_jerk(q0: np.ndarray, q1: np.ndarray, n: int) -> np.ndarray:
@@ -191,7 +191,11 @@ def build_plan(ref: UpperReference, start: np.ndarray, cfg: RunConfig) -> Plan:
         return t_ref, ideal, clipped, cmd
 
     load_info = None
-    if cfg.speed.max_torque_nm or cfg.speed.max_force_n:
+    if cfg.speed.beat_period_s:
+        if not (cfg.speed.max_torque_nm or cfg.speed.max_force_n):
+            raise ValueError("beat alignment needs the load limit (--max-load)")
+        t_ref, ideal, clipped, cmd, load_info = _beat_aligned_playback(ref, start, scales, cfg, playback)
+    elif cfg.speed.max_torque_nm or cfg.speed.max_force_n:
         t_ref, ideal, clipped, cmd, load_info = _load_limited_playback(ref, start, scales, cfg, playback)
     else:
         t_ref, ideal, clipped, cmd = playback()
@@ -275,6 +279,73 @@ def _load_limited_playback(ref, start, scales, cfg, playback, max_iter: int = 8)
         # music runs at tempo s; it starts this long after playback starts (ramp-in lag)
         info["music_tempo"] = round(s, 4)
         info["music_delay_s"] = round(float((len(cmd) - 1) * dt - t_ref[-1] / s), 3)
+    return (*out, info)
+
+
+def _beat_aligned_playback(ref, start, scales, cfg, playback, max_iter: int = 6):
+    """Constant-tempo baseline, then warp so key moves land on the beat grid
+    (g1dance/beats.py), never exceeding the per-passage load cap. Verified on the
+    actual command like the other load-limited modes."""
+    from .beats import align, dance_accents, monotone_map
+    from .load import ArmLoadModel, peaks, tempo_cap
+    sp, dt = cfg.speed, cfg.timing.control_dt
+    model = ArmLoadModel()
+    tg = np.arange(ref.n) / ref.fps
+    qg = scaled(ref.q, start, scales)
+    tau1, F1 = model.loads(qg, tg, ref.qd * scales)
+    cap = tempo_cap(tg, tau1, F1, sp.max_torque_nm, sp.max_force_n, sp.load_window_s)
+    acc = dance_accents(qg, ref.qd * scales, ref.fps)
+
+    def ratio(tau, F):
+        r = np.zeros(len(tau))
+        if sp.max_torque_nm:
+            r = np.maximum(r, np.abs(tau[:, :2]).max(1) / sp.max_torque_nm)
+        if sp.max_force_n:
+            r = np.maximum(r, np.hypot(F[:, 0], F[:, 1]) / sp.max_force_n)
+        return r
+
+    for it in range(1, max_iter + 1):
+        base = float(min(cap.min(), sp.speed))
+        al = align(acc, tg, np.minimum(cap, sp.speed), base, ref.duration, sp.beat_period_s, sp.beat_lo_factor)
+        f, df = monotone_map(al.anchors[:, 0], al.anchors[:, 1])
+        out = playback(lambda tr: float(1.0 / df(tr)[0]))
+        t_ref, cmd = out[0], out[3]
+        tau, F = model.loads(cmd, np.arange(len(cmd)) * dt)
+        r = ratio(tau, F)
+        if r.max() <= 1.0 or it == max_iter:
+            break
+        cap = cap * (0.97 / np.sqrt(r.max()))
+    wall = np.arange(len(t_ref)) * dt
+    hits = al.anchors[1:-1]
+    t_act = np.interp(hits[:, 0], t_ref, wall)
+    lag = float(np.median(t_act - hits[:, 1])) if len(hits) else 0.0
+    resid = (t_act - hits[:, 1] - lag) if len(hits) else np.zeros(0)
+    tempo = np.diff(t_ref) / dt
+    p = peaks(tau, F)
+    p.pop("_i_tau"), p.pop("_i_force")
+    p1 = peaks(tau1, F1)
+    p1.pop("_i_tau"), p1.pop("_i_force")
+    body = tempo[len(tempo) // 20: -5]  # skip the ramp-in and the clipped last ticks
+    k_min = len(tempo) // 20 + int(np.argmin(body))
+    info = {
+        "data_kind": "kinematic model estimate (g1dance/load.py) + beat alignment (g1dance/beats.py)",
+        "peak_load_recorded_tempo": {k: round(v, 2) for k, v in p1.items()},
+        "min_tempo": round(float(tempo[k_min]), 3), "min_tempo_dance_t": round(float(t_ref[k_min]), 2),
+        "max_torque_nm": sp.max_torque_nm, "max_force_n": sp.max_force_n, "iterations": it,
+        "within_limits": bool(r.max() <= 1.0 + 1e-6),
+        "peak_load_planned": {k: round(v, 2) for k, v in p.items()},
+        "playback_s": round(len(cmd) * dt, 2), "recorded_s": round(ref.duration, 2),
+        "constant_tempo": False, "beat_aligned": True,
+        "beat_period_s": round(sp.beat_period_s, 4), "base_tempo": round(base, 4),
+        "tempo_range": [round(float(body.min()), 3), round(float(body.max()), 3)],
+        "accents": int(al.n_accents), "accents_on_grid": int(len(hits)),
+        "accents_on_full_beat": int(sum(al.on_beat)),
+        "accent_timing_residual_max_s": round(float(np.abs(resid).max()) if len(resid) else 0.0, 3),
+        # wall time from playback start of a planned beat, including the ramp-in lag:
+        "beat_grid_phase_s": round((al.grid_phase_s + lag) % sp.beat_period_s, 4),
+        "anchors_dance_t": [round(float(x), 2) for x in hits[:, 0]],
+        "slowed_passages": [],
+    }
     return (*out, info)
 
 

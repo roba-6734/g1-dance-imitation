@@ -58,6 +58,12 @@ class Timing:
     step_quiet_s: float = 1.0
     step_hold_max_s: float = 4.0
     step_return_slowdown: float = 1.5
+    # Link loss (rt/lowstate stale): keep publishing the last command and wait this
+    # long for the state to come back (fresh for link_restore_s), then return to the
+    # start and hand back. If it does not come back, stop publishing and report that
+    # the robot may still be under arm control (the firmware holds the last command).
+    link_wait_s: float = 30.0
+    link_restore_s: float = 0.5
 
 
 @dataclass
@@ -84,6 +90,10 @@ class Speed:
     constant_tempo: bool = False
     # Low-pass the reference before planning (Hz). None = the recording as is.
     smooth_hz: float | None = None
+    # Beat alignment (with --max-load): warp the timing so the dance's key moves land
+    # on beats/half-beats of a grid with this period (from the song). None = off.
+    beat_period_s: float | None = None
+    beat_lo_factor: float = 0.8  # slowest local tempo allowed, relative to the constant tempo
 
     def at(self, t_ref: float) -> float:
         s = self.speed

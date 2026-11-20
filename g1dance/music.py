@@ -77,7 +77,7 @@ def stretched_audio(video: Path, tempo: float, cache_dir: Path) -> Path:
 
 
 def plan_music(plan, cfg_music_file: str | None, video: Path, out_dir: Path,
-               start_s: float = 0.0, stretch: bool | None = None) -> tuple[Path, float, dict]:
+               start_s: float = 0.0, stretch: bool | None = None, beat=None) -> tuple[Path, float, dict]:
     """Prepare the audio for this plan. Returns (wav, delay after playback start [s], info).
 
     A song file plays at its natural speed by default (the dance was recorded
@@ -90,12 +90,20 @@ def plan_music(plan, cfg_music_file: str | None, video: Path, out_dir: Path,
         src, do_stretch = Path(cfg_music_file), bool(stretch)
     else:
         src, do_stretch = Path(video), True
-    if do_stretch:
+    L = plan.load_limit or {}
+    if L.get("beat_aligned"):
+        if beat is None or do_stretch:
+            raise SystemExit("a beat-aligned plan needs the song's beat grid and natural-speed music")
+        # start the song so that its beats fall on the planned grid
+        tempo, delay = 1.0, (L["beat_grid_phase_s"] - beat.first_beat_s) % beat.period_s
+    elif do_stretch:
         tempo, delay = music_sync(plan)
     else:
         tempo, delay = 1.0, 0.0
     wav = prepare_music(src, out_dir, tempo=tempo, start_s=start_s, duration_s=play_s - delay)
     info = {"source": str(src), "stretched_to_tempo": tempo if do_stretch else None, "song_start_s": start_s,
+            **({"beat_bpm": round(beat.bpm, 2), "song_first_beat_s": round(beat.first_beat_s, 3),
+                "beat_strength": round(beat.strength, 2)} if beat is not None else {}),
             "plan_delay_s": round(delay, 3), "file": str(wav)}
     return wav, delay, info
 
