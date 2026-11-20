@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 runs/
 third_party/
-motion_assets/human_motion.mov
+motion_assets/
+docs/

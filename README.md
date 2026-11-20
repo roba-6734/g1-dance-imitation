@@ -11,7 +11,7 @@ The sequence for every run:
 
 Amplitude per group (`arms`, `waist_yaw`, `waist_roll`, `waist_pitch`) follows `target = measured_start + scale × (recorded − measured_start)`. Scale 0 holds the measured start; scale 1 requests the recorded value. `--hold-waist` fixes all three waist joints, which isolates the arm entry.
 
-Results, numbers and caveats: **[docs/FINDINGS.md](docs/FINDINGS.md)**. Hardware procedure: **[docs/HARDWARE.md](docs/HARDWARE.md)**. Sources: [docs/SOURCES.md](docs/SOURCES.md).
+Results, numbers and caveats (`docs/FINDINGS.md`), the hardware procedure (`docs/HARDWARE.md`) and sources (`docs/SOURCES.md`) are kept locally and are not part of this repository.
 
 ## Setup
 
@@ -25,7 +25,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ./scripts/fetch_model.sh
 ```
 
-Put the three assets in `motion_assets/`, or pass `--assets DIR` to any command.
+The motion assets are not tracked in git. Put the three assets in `motion_assets/`, or pass `--assets DIR` to any command.
 
 For hardware only, install Unitree's Python SDK. The script builds CycloneDDS 0.10.x from source (`cyclonedds==0.10.2` has no Python 3.12 wheel), then installs the SDK into `.venv`. Both go in `third_party/`.
 
@@ -82,7 +82,7 @@ Every option is also a config key (`configs/default.toml`) and can be overridden
 .venv/bin/python -m g1dance trial --stage entry --hold-waist --backend unitree --iface enp3s0 --enable-motion
 ```
 
-Stages: `acquire`, `entry`, `playback --ref-end S`, `full`. Read the operator checklist in [docs/HARDWARE.md](docs/HARDWARE.md) before the first live stage.
+Stages: `acquire`, `entry`, `playback --ref-end S`, `full`. Read the operator checklist in `docs/HARDWARE.md` (local, not in the repository) before the first live stage.
 
 ## Layout
 
