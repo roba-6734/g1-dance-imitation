@@ -33,6 +33,87 @@ For hardware only, install Unitree's Python SDK. The script builds CycloneDDS 0.
 ./scripts/install_unitree_sdk.sh
 ```
 
+## From your own video: GVHMR → GMR → reference motion
+
+`video2ref/` is the pipeline that produced the dance used here. Give it a monocular video of one person and it writes a G1 reference that `g1dance` can simulate and play:
+
+```
+video (.mp4/.mov) ──ffmpeg──▶ upright 30 fps H.264
+                  ──GVHMR───▶ SMPL-X body motion (hmr4d_results.pt)      [CUDA]
+                  ──GMR─────▶ Unitree G1 29-DoF qpos, 30 Hz (qpos.npy)
+                  ──upper───▶ motors 12..28, 3-frame mean, 50 Hz (reference_upper_50hz.npz)
+                  ──────────▶ g1dance_assets/  →  python -m g1dance preview --assets …
+```
+
+| Stage | What happens | Output |
+| --- | --- | --- |
+| 1. Video | ffprobe/ffmpeg: auto-rotate, constant 30 fps, long side ≤ `--max-dimension` (default 1280), optional `--clip-seconds` | `preprocess/input.mp4` |
+| 2. GVHMR | Official `tools/demo/demo.py` (YOLO + ViTPose + GVHMR). `--camera static` adds `-s`; `moving` uses SimpleVO | `gvhmr/input/hmr4d_results.pt`, human renders |
+| 3. GMR | `load_gvhmr_pred_file` → `get_gvhmr_data_offline_fast` (rotates GVHMR's y-up world to z-up with `[[1,0,0],[0,0,-1],[0,1,0]]` and slerp-resamples to 30 Hz) → `GeneralMotionRetargeting(src_human="smplx", tgt_robot="unitree_g1")`, every frame kept, including frame 0 | `raw/raw_qpos.npy`, `qpos.npy` `(T,36)`: root xyz, quaternion **wxyz**, 29 joints in rad; `motion.pkl` (root quaternion **xyzw**); `validation.json` |
+| 4. Upper body | Motors 12..28 only (root and legs dropped), centred 3-frame mean, linear 30 → 50 Hz, `joint_vel = gradient`, refuses soft-limit or release-screen breaches | `reference_upper_50hz.npz` + `.json`, `g1dance_assets/` |
+
+Upstream code is used at the commits this project was built with: GVHMR `ee960bb6`, GMR `25f56db7`. Neither is vendored.
+
+### Install
+
+1. Clone both repositories into `third_party/`, which git ignores. With `--envs`, the script also creates the `gvhmr` (CUDA) and `gmr` conda environments.
+
+   ```bash
+   ./scripts/setup_video2ref.sh --envs
+   ```
+
+2. Download the licensed files yourself. Nothing licensed is redistributed here.
+   - SMPL/SMPL-X models and the GVHMR, HMR2, ViTPose and YOLO checkpoints go under `third_party/GVHMR/inputs/checkpoints/`. See GVHMR's `docs/INSTALL.md`.
+   - `SMPLX_NEUTRAL.npz` goes under `third_party/GMR/assets/body_models/smplx/`.
+
+GVHMR needs an NVIDIA GPU. GMR and stage 4 run on the CPU.
+
+### Run
+
+Run from the repository root, inside the `gmr` environment:
+
+```bash
+export MUJOCO_GL=egl   # headless rendering; omit on a desktop
+python -m video2ref --video my_dance.mp4 --output-dir outputs/my_dance \
+  --gvhmr-python "$(conda run -n gvhmr which python)" --camera moving --visualize
+```
+
+The reference in this repository came from a 22.8 s portrait clip run with `--max-dimension 960 --camera moving` and the default options, which means no full-body smoothing. Its upper-body file was exported with the default 3-frame window.
+
+- Re-running the same command reuses the stages that already finished.
+- `--skip-gvhmr` and `--skip-gmr` reuse cached outputs.
+- `--force` recomputes everything.
+- `--clip-seconds 3` gives a quick smoke test.
+
+On a Slurm cluster, copy `configs/hpc.env.example` to `configs/hpc.env` and submit:
+
+```bash
+bash scripts/submit_hpc.sh /abs/path/my_dance.mp4 my_dance --max-dimension 960 --visualize
+```
+
+Stage 4 on its own is numpy-only and runs in the g1dance venv. Use it to re-export an existing `qpos.npy` with a different window:
+
+```bash
+.venv/bin/python -m video2ref.upper --qpos outputs/my_dance/qpos.npy --output outputs/my_dance/ref_w5.npz --smoothing-window 5
+```
+
+### Then
+
+```bash
+.venv/bin/python -m g1dance inspect --assets outputs/my_dance/g1dance_assets
+```
+
+```bash
+.venv/bin/python -m g1dance preview --assets outputs/my_dance/g1dance_assets
+```
+
+Before using the output on a robot, check it:
+
+- Review the GVHMR human render for identity swaps, missing limbs or a wrong ground plane.
+- Review the G1 preview (`g1.mp4`, `comparison.mp4`) and the warnings in `validation.json`.
+
+All of these are kinematic checks only. They do not show balance, contact or hardware safety. Hardware still goes through the staged, opt-in `g1dance trial` procedure below.
+
 ## Offline (no robot)
 
 ```bash
@@ -97,4 +178,7 @@ g1dance/sim.py        MuJoCo fixed-pelvis backend (arm_sdk-style PD)
 g1dance/metrics.py    opening-pose error, worst joint/time, limit events, lag/correlation
 g1dance/render.py     4-column comparison video; plots.py joint traces
 g1dance/hw/           unitree.py (SDK I/O), check.py (read-only), trial.py (staged)
+video2ref/pipeline.py video -> GVHMR -> GMR -> qpos -> 50 Hz reference driver (python -m video2ref)
+video2ref/video.py    ffprobe/ffmpeg normalisation; retarget.py GMR call; validate.py screens
+video2ref/upper.py    30 Hz full body -> 50 Hz upper-body npz (python -m video2ref.upper)
 ```

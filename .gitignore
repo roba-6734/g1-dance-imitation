@@ -5,3 +5,5 @@ runs/
 third_party/
 motion_assets/
 docs/
+configs/hpc.env
+outputs/
