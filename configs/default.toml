@@ -15,18 +15,23 @@ blend_s = 0.4
 ramp_in_s = 0.0     # >0 eases playback start (frame 0 is mid-motion); time warp only
 
 [gains]
-# Arms: Unitree g1_arm7_sdk_dds_example values (kp=60, kd=1.5).
-kp_arm = 60.0
-kd_arm = 1.5
-# Waist: the same example uses kp=60 for the waist too. In the MuJoCo
-# fixed-pelvis model kp=60 lets gravity pull waist pitch ~15 deg past a
-# 7.4 deg opening target (cf. the hardware observation: 20.8 deg physical vs
-# 6.9 deg commanded). kp=300 keeps the simulated error below the 0.10 rad gate.
-# This is a SIMULATION-DERIVED choice: validate on hardware with the gain
-# ladder in docs/HARDWARE.md before relying on it. configs/sdk_example_gains.toml
-# reproduces the example's kp=60.
-kp_waist = 300.0
-kd_waist = 7.5
+# Arms: Unitree's g1_arm7_sdk_dds_example uses kp=60, kd=1.5. On hardware
+# (2026-11-20) kp=60 let the raised right arm sag 7.60 deg below the opening
+# pose and the entry gate stopped the run; kp=120 / kd=3.0 measured 3.86 deg
+# (sim-scaled prediction 3.80) and passed. configs/sdk_example_gains.toml keeps 60.
+kp_arm = 120.0
+kd_arm = 3.0
+# Waist: the same example uses kp=60 for the waist too. Hardware history
+# (2026-11-20): kp=60 (earlier code) -> waist 20.8 deg vs 6.9 deg commanded;
+# kp=300 -> opening pose 9.42 vs 7.38 deg, playback lag 212 ms (with dq ff);
+# kp=400/kd=10 -> lag 163 ms, offset 1.86 deg, playback error 3.44 deg (0-5 s
+# at 0.5x), no oscillation. configs/sdk_example_gains.toml keeps kp=60.
+kp_waist = 400.0
+kd_waist = 10.0
+# Send the commanded velocity in motor_cmd.dq (Unitree's example sends 0).
+# Hardware A/B 2026-11-20, dance 0-5 s at 0.5x: waist lag 241 -> 212 ms, right
+# elbow lag 60 -> 40 ms / RMS 1.27 -> 0.89 deg, no added oscillation.
+dq_feedforward = true
 
 [limits]
 pos_margin = 0.05     # rad inside URDF range

@@ -52,3 +52,17 @@ def test_operator_stop_mid_playback_returns_and_releases(ref):
     assert not r.completed and r.stop.check == "operator"
     log = r.log.arrays()
     assert log["weight"][-1] == 0.0 and np.allclose(log["q_cmd"][-1], start)
+
+
+def test_dq_feedforward_reduces_waist_lag_in_sim(ref):
+    errs = []
+    for ff in (False, True):
+        cfg = load_config(ROOT / "configs" / "default.toml")
+        cfg.gains.dq_feedforward = ff
+        cfg.speed.ref_end_s = 5.0
+        p, r, start = run(ref, cfg)
+        a = r.log.arrays()
+        m = a["phase"] == PHASES.index("playback")
+        errs.append(np.abs(a["q_meas"][m, 14] - a["q_cmd"][m, 2]).max())
+        assert r.completed
+    assert errs[1] < errs[0]

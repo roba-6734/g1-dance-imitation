@@ -126,17 +126,20 @@ class UnitreeBackend:
         assert st is not None
         return st
 
-    def send(self, q, kp, kd, weight):
+    def send(self, q, kp, kd, weight, dq=None):
         if self._pub is None:
             raise PermissionError("backend not armed; refusing to publish")
         q, kp, kd = (np.asarray(x, float) for x in (q, kp, kd))
+        dq = np.zeros(N_UPPER) if dq is None else np.asarray(dq, float)
+        if dq.shape != (N_UPPER,) or not np.all(np.isfinite(dq)):
+            raise ValueError("bad dq vector")
         if q.shape != (N_UPPER,) or not np.all(np.isfinite(q)):
             raise ValueError("bad command vector")
         assert_upper_only(UPPER_IDS)
         m = self._msg
         for c, i in enumerate(UPPER_IDS):
             mc = m.motor_cmd[i]
-            mc.q, mc.dq, mc.kp, mc.kd, mc.tau = float(q[c]), 0.0, float(kp[c]), float(kd[c]), 0.0
+            mc.q, mc.dq, mc.kp, mc.kd, mc.tau = float(q[c]), float(dq[c]), float(kp[c]), float(kd[c]), 0.0
         m.motor_cmd[WEIGHT_INDEX].q = float(np.clip(weight, 0.0, 1.0))
         m.crc = self._crc.Crc(m)
         self._pub.Write(m)

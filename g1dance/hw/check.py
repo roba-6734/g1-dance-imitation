@@ -13,6 +13,11 @@ from ..joints import G1_JOINT_NAMES, N_UPPER, POS_LOWER, POS_UPPER, UPPER_IDS, U
 
 D = np.degrees
 
+# Morning stances (10 runs, no stepping) agreed with runs/stance.json within 1.8 deg per leg joint;
+# the post-recharge stance that stepped (FINDINGS 4k) differed by up to 5.4 deg.
+LEG_TOL_DEG = 2.0
+PITCH_CHAIN = ((0, 6, "hip_pitch"), (3, 9, "knee"), (4, 10, "ankle_pitch"))
+
 
 def add_parser(sub):
     p = sub.add_parser("check", help="READ-ONLY: read robot state, classify variant, save stance")
@@ -20,10 +25,34 @@ def add_parser(sub):
     p.add_argument("--seconds", type=float, default=3.0)
     p.add_argument("--save-stance", default=None, help="write measured upper-body stance JSON here")
     p.add_argument("--assets", default=None)
+    p.add_argument("--leg-reference", default=None,
+                   help="stance JSON from a run where Unitree did not step (e.g. runs/stance.json); "
+                        "compares the current leg posture against it")
+    p.add_argument("--leg-tol-deg", type=float, default=LEG_TOL_DEG)
     p.set_defaults(fn=run)
 
 
-def summarize(states, stamps, variant, probe_count, probe_weight, ref_frame0=None) -> dict:
+def leg_stance_checks(leg_deg, leg_ref_deg=None, tol_deg=LEG_TOL_DEG):
+    """Read-only comparison of the leg posture (12 values, deg, SDK order). Returns check dicts."""
+    leg_deg = np.asarray(leg_deg, float)
+    out = []
+    asym = {n: round(float(leg_deg[l] - leg_deg[r]), 1) for l, r, n in PITCH_CHAIN}
+    out.append({"level": "INFO", "msg": f"leg stance left-minus-right (deg): {asym}"})
+    if leg_ref_deg is not None:
+        diff = leg_deg - np.asarray(leg_ref_deg, float)
+        j = int(np.argmax(np.abs(diff)))
+        bad = {G1_JOINT_NAMES[i]: round(float(diff[i]), 1) for i in range(12) if abs(diff[i]) > tol_deg}
+        if bad:
+            out.append({"level": "WARN", "msg": f"leg stance differs from reference by > {tol_deg:.1f} deg: {bad}. "
+                        "Feet may be staggered; Unitree stepped in a run like this (FINDINGS 4k). Re-stand the robot."})
+        else:
+            out.append({"level": "PASS", "msg": f"leg stance matches reference within {tol_deg:.1f} deg "
+                        f"(max {G1_JOINT_NAMES[j]} {diff[j]:+.1f})"})
+    return out
+
+
+def summarize(states, stamps, variant, probe_count, probe_weight, ref_frame0=None,
+              leg_ref_deg=None, leg_tol_deg=LEG_TOL_DEG) -> dict:
     q = np.array([s.q for s in states])
     rpy = np.array([s.imu_rpy for s in states])
     rate = (len(stamps) - 1) / (stamps[-1] - stamps[0]) if len(stamps) > 1 else 0.0
@@ -45,6 +74,7 @@ def summarize(states, stamps, variant, probe_count, probe_weight, ref_frame0=Non
     tilt = D(np.ptp(rpy[:, :2], axis=0))
     add("INFO", f"pelvis IMU rpy (deg) median {np.round(D(np.median(rpy, 0)), 2).tolist()}, "
                 f"roll/pitch spread {np.round(tilt, 2).tolist()}")
+    checks += leg_stance_checks(D(np.median(q[:, :12], axis=0)), leg_ref_deg, leg_tol_deg)
     rep = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "data_kind": "physical",
            "mode_machine": variant.mode_machine, "variant": variant.describe(),
            "lowstate_rate_hz": rate, "upper_q": upper.tolist(),
@@ -80,7 +110,11 @@ def run(a):
     if a.assets:
         from ..reference import UPPER_FILE, load_upper
         f0 = load_upper(Path(a.assets) / UPPER_FILE).q[0]
-    rep = summarize(states, stamps, variant, probe.count, probe.last_weight, f0)
+    leg_ref = None
+    if a.leg_reference:
+        legs = json.loads(Path(a.leg_reference).read_text())["leg_q_deg"]
+        leg_ref = [legs[G1_JOINT_NAMES[i]] for i in range(12)]
+    rep = summarize(states, stamps, variant, probe.count, probe.last_weight, f0, leg_ref, a.leg_tol_deg)
     for c in rep["checks"]:
         print(f"  [{c['level']:4s}] {c['msg']}")
     print("upper-body stance (deg):")

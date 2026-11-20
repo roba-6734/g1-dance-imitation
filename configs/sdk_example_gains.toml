@@ -27,6 +27,7 @@ kd_arm = 1.5
 # reproduces the example's kp=60.
 kp_waist = 60.0
 kd_waist = 1.5
+dq_feedforward = false
 
 [limits]
 pos_margin = 0.05     # rad inside URDF range

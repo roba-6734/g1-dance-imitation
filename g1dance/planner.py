@@ -227,3 +227,29 @@ def build_acquire_only_plan(start: np.ndarray, cfg: RunConfig, hold_s: float = 3
             _named(_hold(start, steps(tm.release_s), 1.0, 0.0), "release")]
     return Plan(dt=dt, start=start, ref_frame0=np.full(N_UPPER, np.nan),
                 entry_target_ideal=start, entry_target=start, segments=segs)
+
+
+def build_recover_plan(current: np.ndarray, stance: np.ndarray, cfg: RunConfig) -> Plan:
+    """Recovery after a crash left arm_sdk holding its last command.
+
+    The firmware keeps the last arm_sdk command at weight 1 when our process
+    dies (observed 2026-11-20). So recovery must start AT WEIGHT 1 on the
+    currently measured pose: starting the weight near 0 would hand the arm to
+    Unitree in one step and snap it toward Unitree's pose. Then move slowly
+    to the saved stance and only then ramp the weight down.
+    """
+    tm, dt = cfg.timing, cfg.timing.control_dt
+    current, stance = np.asarray(current, float), np.asarray(stance, float)
+    steps = lambda sec: max(1, int(round(sec / dt)))
+    v = np.full(N_UPPER, tm.entry_arm_vel)
+    v[:3] = tm.entry_waist_vel
+    T = min_jerk_duration(stance - current, v, tm.return_min_s)
+    n = steps(T)
+    nan = lambda k: np.full((k, N_UPPER), np.nan)
+    segs = [_named(_hold(current, steps(1.0)), "acquire"),  # weight 1 from the first tick
+            Segment("return", min_jerk(current, stance, n), np.ones(n), np.full(n, np.nan), nan(n)),
+            _named(_hold(stance, steps(tm.release_hold_s)), "release"),
+            _named(_hold(stance, steps(tm.release_s), 1.0, 0.0), "release")]
+    # start = stance: an abort during recovery must also head DOWN to the stance.
+    return Plan(dt=dt, start=stance, ref_frame0=np.full(N_UPPER, np.nan), entry_target_ideal=stance,
+                entry_target=stance, segments=segs, return_duration=n * dt)

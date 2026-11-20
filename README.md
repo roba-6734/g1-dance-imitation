@@ -27,10 +27,10 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 Put the three assets in `motion_assets/`, or pass `--assets DIR` to any command.
 
-For hardware only, install Unitree's Python SDK by following its README. It needs CycloneDDS 0.10.x.
+For hardware only, install Unitree's Python SDK. The script builds CycloneDDS 0.10.x from source (`cyclonedds==0.10.2` has no Python 3.12 wheel), then installs the SDK into `.venv`. Both go in `third_party/`.
 
 ```bash
-git clone https://github.com/unitreerobotics/unitree_sdk2_python && .venv/bin/pip install -e unitree_sdk2_python
+./scripts/install_unitree_sdk.sh
 ```
 
 ## Offline (no robot)

@@ -24,7 +24,8 @@ class Backend(Protocol):
     data_kind: str  # "simulated" | "physical"
 
     def read_state(self) -> RobotState: ...
-    def send(self, q: np.ndarray, kp: np.ndarray, kd: np.ndarray, weight: float) -> None: ...
+    def send(self, q: np.ndarray, kp: np.ndarray, kd: np.ndarray, weight: float,
+             dq: np.ndarray | None = None) -> None: ...
     def wait_tick(self) -> None: ...
     def now(self) -> float: ...
 
@@ -84,6 +85,7 @@ def execute(plan: Plan, backend: Backend, cfg: RunConfig, monitor: Monitor,
             waist_roll_pitch_actuated: bool = True,
             operator_stop: Callable[[], bool] | None = None) -> RunResult:
     kp, kd = cfg.gains.vectors()
+    ff = _Feedforward(cfg)
     log = RunLog(backend.data_kind)
     t0 = backend.now()
     gate_info = None
@@ -100,7 +102,7 @@ def execute(plan: Plan, backend: Backend, cfg: RunConfig, monitor: Monitor,
             stops = [Stop("operator", "Ctrl-C", 0.0, 0.0, "-", phase, t, t_ref)] + stops
         if stops:
             return stops
-        backend.send(q, kp, kd, w)
+        backend.send(q, kp, kd, w, ff(q))
         last_cmd = np.array(q)
         backend.wait_tick()
         return []
@@ -138,6 +140,28 @@ def execute(plan: Plan, backend: Backend, cfg: RunConfig, monitor: Monitor,
                                   plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
     log.event("done", handed_back=True)
     return RunResult(True, None, log, gate_info)
+
+
+class _Feedforward:
+    """Commanded velocity for motor_cmd.dq: finite difference of successive
+    commands, clipped to the command-rate caps. Returns None when disabled."""
+
+    def __init__(self, cfg: RunConfig):
+        self.on = bool(cfg.gains.dq_feedforward)
+        self.dt = cfg.timing.control_dt
+        self.cap = cfg.limits.vel_vector()
+        self.prev: np.ndarray | None = None
+
+    def reset(self, q):
+        self.prev = np.array(q, float)
+
+    def __call__(self, q):
+        q = np.array(q, float)
+        if not self.on:
+            return None
+        v = np.zeros_like(q) if self.prev is None else np.clip((q - self.prev) / self.dt, -self.cap, self.cap)
+        self.prev = q
+        return v
 
 
 def _gate(plan, backend, cfg, tick, wrp, log):

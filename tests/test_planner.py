@@ -164,3 +164,20 @@ def test_ramp_in_softens_start_without_changing_frame0(ref):
     dv = lambda s: np.abs(np.diff(s.q[:3], axis=0)).max() / cfg.timing.control_dt
     assert dv(b) < 0.5 * dv(a)
     assert b.t_ref[-1] == pytest.approx(ref.duration)
+
+
+def test_recover_plan_starts_at_full_weight_and_ends_at_stance(ref):
+    from g1dance.planner import build_recover_plan
+    cfg = RunConfig()
+    raised = ref.q[0].copy()
+    p = build_recover_plan(raised, START, cfg)
+    f = p.flat()
+    assert f["weight"][0] == 1.0  # never hand to Unitree while the arm is up
+    assert np.allclose(f["q"][0], raised)
+    ret = f["phase"] == 5
+    assert np.all(f["weight"][ret] == 1.0)
+    assert np.allclose(f["q"][-1], START) and f["weight"][-1] == 0.0
+    assert np.all(f["weight"][f["weight"] < 1.0] >= 0.0)
+    first_drop = np.argmax(f["weight"] < 1.0)
+    assert np.allclose(f["q"][first_drop:], START)  # weight only ramps down once at the stance
+    assert np.allclose(p.start, START)  # abort target is the stance, not the raised pose

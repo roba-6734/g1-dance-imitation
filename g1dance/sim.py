@@ -27,6 +27,12 @@ from .monitor import RobotState
 ROOT = Path(__file__).resolve().parent.parent
 MENAGERIE_G1 = ROOT / "third_party" / "mujoco_menagerie" / "unitree_g1"
 PELVIS_HEIGHT = 0.793
+# Model of Unitree's own upper-body hold at arm_sdk weight 0 (unknown on the
+# real robot). A real G1 in locomotion mode holds its stance still (measured
+# |dq| < 0.05 rad/s, waist steady), so it is modelled as stiff: Menagerie's
+# default position-actuator gain. Only affects phases with weight < 1.
+UNITREE_HOLD_KP = 500.0
+UNITREE_HOLD_KD = 10.0
 
 
 def _mujoco():
@@ -86,22 +92,20 @@ class SimBackend:
             self.model.actuator_biasprm[i, 1:3] = 0.0
         self.hold_upper = np.array(start_upper, float)  # what "Unitree" holds at weight 0
         self.cmd = (self.hold_upper.copy(), np.zeros(N_UPPER), np.zeros(N_UPPER), 0.0)
+        self.cmd_dq = np.zeros(N_UPPER)
         self.torso_site = self.model.site("imu_in_torso").id
         mujoco.mj_forward(self.model, self.data)
-        # Let gravity settle with the start pose held so t=0 is at rest.
-        self.cmd = (self.hold_upper.copy(), np.full(N_UPPER, 60.0), np.full(N_UPPER, 1.5), 1.0)
+        # Let gravity settle under Unitree's (stiff) hold so t=0 is at rest at the start pose.
         for _ in range(int(1.0 / physics_dt)):
             self._step()
-        self.cmd = (self.hold_upper.copy(), np.zeros(N_UPPER), np.zeros(N_UPPER), 0.0)
-        self.hold_upper = self.data.qpos[list(UPPER_IDS)].copy()
         self.t = 0.0
 
     def _step(self):
         ids = list(UPPER_IDS)
         q, dq = self.data.qpos[ids], self.data.qvel[ids]
         qc, kp, kd, w = self.cmd
-        tau_sdk = kp * (qc - q) - kd * dq
-        tau_hold = 60.0 * (self.hold_upper - q) - 1.5 * dq  # assumed Unitree hold at weight 0
+        tau_sdk = kp * (qc - q) + kd * (self.cmd_dq - dq)
+        tau_hold = UNITREE_HOLD_KP * (self.hold_upper - q) - UNITREE_HOLD_KD * dq  # Unitree hold, weight 0
         tau = np.clip(w * tau_sdk + (1 - w) * tau_hold, -URDF_EFFORT_LIMIT, URDF_EFFORT_LIMIT)
         self.data.qfrc_applied[:] = 0.0
         self.data.qfrc_applied[ids] = tau
@@ -114,8 +118,9 @@ class SimBackend:
         return RobotState(stamp=self.t, q=self.data.qpos[:29].copy(), dq=self.data.qvel[:29].copy(),
                           imu_rpy=np.zeros(3), mode_machine=5, torso_rpy=torso)
 
-    def send(self, q, kp, kd, weight):
+    def send(self, q, kp, kd, weight, dq=None):
         self.cmd = (np.array(q, float), np.array(kp, float), np.array(kd, float), float(weight))
+        self.cmd_dq = np.zeros(N_UPPER) if dq is None else np.array(dq, float)
 
     def wait_tick(self):
         for _ in range(self.n_sub):

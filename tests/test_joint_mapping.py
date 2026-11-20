@@ -97,3 +97,32 @@ def test_unitree_backend_refuses_without_arming():
         b.send(np.zeros(17), np.zeros(17), np.zeros(17), 1.0)
     with pytest.raises(PermissionError):
         b.arm(confirmed=False)
+
+
+def test_unitree_backend_dq_feedforward_field():
+    from g1dance.hw.unitree import UnitreeBackend
+    msg = SimpleNamespace(motor_cmd=[SimpleNamespace(q=0.0, dq=-9.0, kp=0.0, kd=0.0, tau=0.0) for _ in range(35)], crc=0)
+    b = object.__new__(UnitreeBackend)
+    b._pub, b._msg, b._crc = SimpleNamespace(Write=lambda m: None), msg, SimpleNamespace(Crc=lambda m: 1)
+    b.send(np.zeros(17), np.ones(17), np.ones(17), 1.0)  # default: dq = 0 like Unitree's example
+    assert all(msg.motor_cmd[i].dq == 0.0 for i in J.UPPER_IDS)
+    dq = np.linspace(-1, 1, 17)
+    b.send(np.zeros(17), np.ones(17), np.ones(17), 1.0, dq)
+    assert all(msg.motor_cmd[i].dq == pytest.approx(dq[c]) for c, i in enumerate(J.UPPER_IDS))
+    assert all(msg.motor_cmd[i].dq == -9.0 for i in J.LEG_IDS)
+
+
+def test_leg_stance_check_flags_staggered_feet():
+    import json
+    from g1dance.hw.check import leg_stance_checks
+    from tests.conftest import ROOT
+    ref = ROOT / "runs" / "stance.json"
+    good = [-21.9, -1.5, 1.0, 35.7, -15.9, 1.9, -19.5, 1.2, -0.7, 35.1, -19.3, 0.3]     # 121046: no steps
+    bad = [-18.5, -1.5, 0.8, 36.4, -19.6, 1.1, -22.4, 1.2, -1.0, 33.1, -14.3, -0.8]     # 134151: stepped
+    refv = ([json.loads(ref.read_text())["leg_q_deg"][J.G1_JOINT_NAMES[i]] for i in range(12)]
+            if ref.exists() else good)
+    lv = lambda c: [x["level"] for x in c]
+    assert lv(leg_stance_checks(good, refv)) == ["INFO", "PASS"]
+    c = leg_stance_checks(bad, refv)
+    assert lv(c) == ["INFO", "WARN"] and "right_ankle_pitch_joint" in c[1]["msg"]
+    assert lv(leg_stance_checks(bad)) == ["INFO"]  # no reference: report only

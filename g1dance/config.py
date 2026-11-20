@@ -89,6 +89,11 @@ class Gains:
     kd_arm: float = 1.5
     kp_waist: float = 60.0
     kd_waist: float = 1.5
+    # Send the commanded joint velocity in motor_cmd[i].dq (Unitree's example
+    # sends 0). With dq=0 the kd term brakes every motion, which shows up as
+    # lag; with feed-forward it damps only the velocity ERROR. Positions and
+    # thresholds are unchanged. Off by default until validated on hardware.
+    dq_feedforward: bool = False
 
     def vectors(self) -> tuple[np.ndarray, np.ndarray]:
         kp = np.full(N_UPPER, float(self.kp_arm))

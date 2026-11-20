@@ -27,7 +27,7 @@ D = np.degrees
 def add_parser(sub, add_run_args):
     p = sub.add_parser("trial", help="staged trial (sim by default; live needs --enable-motion)")
     add_run_args(p)
-    p.add_argument("--stage", required=True, choices=["acquire", "entry", "playback", "full"])
+    p.add_argument("--stage", required=True, choices=["acquire", "entry", "playback", "full", "recover"])
     p.add_argument("--backend", choices=["sim", "unitree"], default="sim")
     p.add_argument("--iface", help="robot network interface (unitree backend)")
     p.add_argument("--enable-motion", action="store_true",
@@ -37,6 +37,8 @@ def add_parser(sub, add_run_args):
     p.add_argument("--assume-mode-machine", type=int, default=None,
                    help="only if the robot reports an unknown mode_machine and you have verified the variant")
     p.add_argument("--sim-start-pose", default=None, help="sim backend: stance JSON from `check`")
+    p.add_argument("--to-stance", default=None,
+                   help="recover: stance JSON (from `check`) to return to before handing back")
     p.set_defaults(fn=run)
 
 
@@ -54,7 +56,7 @@ def run(a):
     from ..cli import print_settings, resolve_config
     from ..metrics import kinematic_report, run_report
     from ..monitor import Monitor
-    from ..planner import build_acquire_only_plan, build_entry_only_plan, build_plan
+    from ..planner import build_acquire_only_plan, build_entry_only_plan, build_plan, build_recover_plan
     from ..reference import UPPER_FILE, load_upper, sha256
     from ..runner import execute, new_run_dir, write_run
 
@@ -95,7 +97,12 @@ def run(a):
         raise SystemExit("waist roll/pitch are locked on this variant: use --waist-roll 0 --waist-pitch 0 or --hold-waist")
 
     start = st.upper_q.copy()
-    if a.stage == "acquire":
+    if a.stage == "recover":
+        if not a.to_stance:
+            raise SystemExit("--stage recover needs --to-stance runs/stance.json")
+        stance = np.array(json.loads(Path(a.to_stance).read_text())["upper_q"], float)
+        plan = build_recover_plan(start, stance, cfg)
+    elif a.stage == "acquire":
         plan = build_acquire_only_plan(start, cfg)
     elif a.stage == "entry":
         plan = build_entry_only_plan(ref, start, cfg)
@@ -143,6 +150,11 @@ def run(a):
     if live:
         extra["control_overruns"] = backend.overruns
     write_run(run_dir, result, cfg, extra)
-    print("RESULT:", "completed + handed back" if result.completed else result.stop.message())
+    bar = "=" * 78
+    if result.completed:
+        print(f"{bar}\nRESULT: COMPLETED + handed back\n{bar}")
+    else:
+        print(f"{bar}\nRESULT: STOPPED (safe abort: returned to start, handed back)\n"
+              f"  {result.stop.message()}\n{bar}")
     print(f"run dir: {run_dir}")
     return 0 if result.completed else 3
