@@ -1,0 +1,50 @@
+# Default run configuration. Every value here is logged with each run.
+# Amplitude: target = measured_start + scale * (recorded - measured_start)
+#   scale 0 holds the measured starting value, 1 requests the recorded value.
+
+[scales]
+arms = 1.0
+waist_yaw = 1.0
+waist_roll = 1.0
+waist_pitch = 1.0
+
+[speed]
+speed = 1.0          # playback rate; amplitude is unaffected
+segments = []        # [[t0, t1, factor], ...] in dance seconds, e.g. [[8.0, 11.0, 0.5]]
+blend_s = 0.4
+ramp_in_s = 0.0     # >0 eases playback start (frame 0 is mid-motion); time warp only
+
+[gains]
+# Arms: Unitree g1_arm7_sdk_dds_example values (kp=60, kd=1.5).
+kp_arm = 60.0
+kd_arm = 1.5
+# Waist: the same example uses kp=60 for the waist too. In the MuJoCo
+# fixed-pelvis model kp=60 lets gravity pull waist pitch ~15 deg past a
+# 7.4 deg opening target (cf. the hardware observation: 20.8 deg physical vs
+# 6.9 deg commanded). kp=300 keeps the simulated error below the 0.10 rad gate.
+# This is a SIMULATION-DERIVED choice: validate on hardware with the gain
+# ladder in docs/HARDWARE.md before relying on it. configs/sdk_example_gains.toml
+# reproduces the example's kp=60.
+kp_waist = 300.0
+kd_waist = 7.5
+
+[limits]
+pos_margin = 0.05     # rad inside URDF range
+vel_arm = 3.0         # rad/s command-rate cap
+vel_wrist_pitch_yaw = 3.0
+vel_waist = 0.6
+
+[gates]
+entry_cmd_tol = 1e-6
+entry_meas_tol_arm = 0.10
+entry_meas_tol_waist = 0.05
+track_arm = 0.35
+track_waist_yaw = 0.15
+track_waist_roll = 0.10
+track_waist_pitch = 0.10
+waist_pitch_abs = 0.30
+waist_roll_abs = 0.25
+imu_pitch_delta = 0.12
+imu_roll_delta = 0.10
+joint_speed = 6.0
+state_timeout_s = 0.10

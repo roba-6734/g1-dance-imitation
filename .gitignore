@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+runs/
+third_party/
+motion_assets/human_motion.mov
