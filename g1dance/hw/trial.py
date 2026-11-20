@@ -27,6 +27,11 @@ D = np.degrees
 def add_parser(sub, add_run_args):
     p = sub.add_parser("trial", help="staged trial (sim by default; live needs --enable-motion)")
     add_run_args(p)
+    p.add_argument("--music", action="store_true",
+                   help="live only: play the dance's song (time-stretched to the constant tempo) from this "
+                        "computer, starting with playback")
+    p.add_argument("--music-offset", type=float, default=0.0, metavar="S",
+                   help="shift the music start: positive = later, negative = earlier (audio latency)")
     p.add_argument("--stage", required=True, choices=["acquire", "entry", "playback", "full", "recover"])
     p.add_argument("--backend", choices=["sim", "unitree"], default="sim")
     p.add_argument("--iface", help="robot network interface (unitree backend)")
@@ -118,6 +123,22 @@ def run(a):
     print_load_limit(plan)
     print(f"planned duration {total:.1f}s (entry {plan.entry_duration:.1f}s)")
 
+    player, music_info = None, None
+    if a.music:
+        if a.stage not in ("playback", "full"):
+            raise SystemExit("--music is for --stage playback/full")
+        if not live:
+            raise SystemExit("--music needs the live backend (the sim does not run in real time); "
+                             "use `preview` with the same options to see and hear the result")
+        from ..music import MusicPlayer, plan_music
+        from ..reference import VIDEO_FILE
+        wav, delay, music_info = plan_music(plan, a.music_file, Path(a.assets) / VIDEO_FILE, Path(a.out) / "music",
+                                            a.music_start, a.music_stretch)
+        player = MusicPlayer(wav, delay + a.music_offset)
+        music_info["operator_offset_s"] = a.music_offset
+        print(f"music: {Path(music_info['source']).name} -> {wav.name}, starts {delay + a.music_offset:+.3f}s "
+              f"after playback starts")
+
     if live:
         if not _ask(f"Type '{a.stage}' to take upper-body control and start: ", a.stage):
             print("aborted by operator before any command was sent")
@@ -136,9 +157,12 @@ def run(a):
         result = execute(plan, backend, cfg, Monitor(cfg.gates, variant.waist_roll_pitch_actuated is not False),
                          confirm_playback=confirm,
                          waist_roll_pitch_actuated=variant.waist_roll_pitch_actuated is not False,
-                         operator_stop=lambda: stop_flag["v"])
+                         operator_stop=lambda: stop_flag["v"],
+                         on_phase=player.on_phase if player else None)
     finally:
         signal.signal(signal.SIGINT, old)
+        if player is not None and sys.exc_info()[0] is not None:
+            player.stop()  # crashed: silence the music
 
     run_dir = new_run_dir(Path(a.out), f"trial_{a.stage}_{a.backend}")
     log = result.log.arrays()
@@ -152,6 +176,8 @@ def run(a):
             extra["load_limit"] = plan.load_limit
     if live:
         extra["control_overruns"] = backend.overruns
+    if music_info:
+        extra["music"] = music_info
     write_run(run_dir, result, cfg, extra)
     bar = "=" * 78
     if result.completed:

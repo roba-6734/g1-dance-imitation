@@ -110,6 +110,7 @@ def robot_qpos(upper: np.ndarray) -> np.ndarray:
 
 def render_video(out: Path, full: FullBodyRetarget, log: dict, human: Path | None,
                  title: str, notes: list[str], audio_offset_s: float | None = None,
+                 audio_file: Path | None = None,
                  sim_label: str = "SIMULATED (MuJoCo, fixed pelvis)"):
     mujoco = _mujoco()
     model = load_model(fixed_base=False)
@@ -141,11 +142,10 @@ def render_video(out: Path, full: FullBodyRetarget, log: dict, human: Path | Non
     W, H = PW * 4, PH * 2
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
            "-r", str(FPS), "-i", "-"]
-    aac = _aac_stream(human) if (audio_offset_s is not None and human) else None
-    if aac is not None:
-        # Music starts when the dance timeline starts (after acquire/entry/settle).
-        cmd += ["-itsoffset", f"{audio_offset_s:.3f}", "-i", str(human), "-map", "0:v", "-map", f"1:{aac}",
-                "-c:a", "aac"]
+    if audio_file is not None and audio_offset_s is not None:
+        # prepared, normalised music (g1dance/music.py) starting when the dance timeline starts
+        cmd += ["-itsoffset", f"{audio_offset_s:.3f}", "-i", str(audio_file), "-map", "0:v", "-map", "1:a:0",
+                "-c:a", "aac", "-b:a", "192k"]
     cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", str(out)]
     ff = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     labels = ["HUMAN recording", "RETARGETED source (full body)", "PLANNED command (kinematic)", sim_label]

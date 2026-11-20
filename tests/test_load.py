@@ -60,3 +60,81 @@ def test_load_limit_respects_explicit_slower_speed(ref):
     p = build_plan(ref, _start(), cfg)
     n = len(p.segment("playback").q)
     assert n * p.dt >= ref.duration / 0.4 - 0.05
+
+
+def test_smoothing_keeps_shape_and_lowers_load(ref):
+    from g1dance.load import ArmLoadModel, peaks
+    from g1dance.reference import smooth_reference
+    s = smooth_reference(ref, 2.0)
+    d = np.degrees(np.abs(s.q - ref.q))
+    assert d.max() < 4.0 and np.degrees(np.abs(s.q[0] - ref.q[0])).max() < 1.0  # opening pose ~kept
+    assert smooth_reference(ref, None) is ref
+    m, t = ArmLoadModel(), ref.times()
+    assert peaks(*m.loads(s.q, t, s.qd))["pitch_nm"] < 0.7 * peaks(*m.loads(ref.q, t, ref.qd))["pitch_nm"]
+
+
+def test_constant_tempo_is_constant_within_limits_and_music_syncs(ref):
+    from g1dance.music import music_sync
+    cfg = load_config(ROOT / "configs" / "default.toml")
+    cfg.speed.ramp_in_s = 0.3
+    cfg.speed.max_torque_nm, cfg.speed.max_force_n = 1.2, 4.1
+    cfg.speed.constant_tempo, cfg.speed.smooth_hz = True, 2.0
+    p = build_plan(ref, _start(), cfg)
+    L = p.load_limit
+    assert L["within_limits"] and L["constant_tempo"]
+    tempo, delay = music_sync(p)
+    assert abs(tempo - L["music_tempo"]) < 1e-3 and 0 < delay < 0.3  # ramp-in lag only
+    tr = p.segment("playback").t_ref
+    rate = np.diff(tr) / p.dt
+    assert np.ptp(rate[len(rate) // 4:-2]) < 1e-9
+
+
+def test_music_refuses_varying_tempo(ref):
+    import pytest
+    from g1dance.music import music_sync
+    cfg = load_config(ROOT / "configs" / "default.toml")
+    cfg.speed.max_torque_nm, cfg.speed.max_force_n = 1.2, 4.1
+    with pytest.raises(SystemExit):
+        music_sync(build_plan(ref, _start(), cfg))
+    cfg = load_config(ROOT / "configs" / "default.toml")
+    cfg.speed.speed = 0.5
+    assert abs(music_sync(build_plan(ref, _start(), cfg))[0] - 0.5) < 1e-9
+
+
+def test_music_player_starts_on_playback_and_stops_on_abort(tmp_path, monkeypatch):
+    import g1dance.music as M
+    launched, killed = [], []
+
+    class P:
+        def poll(self): return None
+        def terminate(self): killed.append(1)
+    monkeypatch.setattr(M.shutil, "which", lambda x: "/usr/bin/" + x)
+    monkeypatch.setattr(M.subprocess, "Popen", lambda cmd, **kw: launched.append(cmd) or P())
+    mp = M.MusicPlayer(tmp_path / "x.wav", -0.2)
+    mp.on_phase("entry")
+    assert not launched
+    mp.on_phase("playback")
+    assert launched and "-ss" in launched[0] and "0.200" in launched[0]
+    mp.on_phase("abort")
+    assert killed
+
+
+def test_music_file_natural_speed_trimmed_normalised(ref, tmp_path):
+    import subprocess
+    from g1dance.music import plan_music
+    song = tmp_path / "song.mp3"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=90,volume=0.02",
+                    str(song)], check=True)
+    cfg = load_config(ROOT / "configs" / "default.toml")
+    cfg.speed.max_torque_nm, cfg.speed.max_force_n = 1.2, 4.1  # varying tempo is fine for a natural-speed song
+    p = build_plan(ref, _start(), cfg)
+    wav, delay, info = plan_music(p, str(song), ROOT / "motion_assets" / "human_motion.mov", tmp_path, start_s=10)
+    assert delay == 0.0 and info["stretched_to_tempo"] is None
+    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                str(wav)], capture_output=True, text=True).stdout)
+    play_s = len(p.segment("playback").q) * p.dt
+    assert abs(dur - play_s) < 0.1
+    vol = subprocess.run(["ffmpeg", "-i", str(wav), "-af", "volumedetect", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    mean = float(vol.split("mean_volume:")[1].split("dB")[0])
+    assert mean > -25  # normalised up from a -40 dB source

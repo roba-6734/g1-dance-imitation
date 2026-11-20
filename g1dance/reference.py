@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -146,3 +146,22 @@ def quat_wxyz_to_rpy(q: np.ndarray) -> np.ndarray:
     pitch = np.arcsin(np.clip(2 * (w * y - z * x), -1, 1))
     yaw = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
     return np.stack([roll, pitch, yaw], axis=1)
+
+
+def smooth_reference(ref: UpperReference, cutoff_hz: float) -> UpperReference:
+    """Low-pass filter the upper-body reference (zero phase, so nothing is
+    delayed). The gain is 1 below 0.7*cutoff_hz and falls linearly to 0 at
+    1.3*cutoff_hz. The ends are point-reflected so position and slope stay continuous
+    there (frame 0 is mid-motion). The velocities are recomputed from the filtered
+    positions. This removes retargeting jitter and lowers the arm load
+    (FINDINGS 4x); the change to each joint is reported by the plan."""
+    if not cutoff_hz or cutoff_hz <= 0:
+        return ref
+    x = ref.q
+    # odd (point) reflection keeps position AND slope continuous at the ends; frame 0 is mid-motion
+    xp = np.concatenate([2 * x[0] - x[::-1], x, 2 * x[-1] - x[::-1]])
+    f = np.fft.rfftfreq(len(xp), 1.0 / ref.fps)
+    gain = np.clip((1.3 * cutoff_hz - f) / (0.6 * cutoff_hz), 0.0, 1.0)
+    y = np.fft.irfft(np.fft.rfft(xp, axis=0) * gain[:, None], n=len(xp), axis=0)[len(x):2 * len(x)]
+    qd = np.gradient(y, 1.0 / ref.fps, axis=0)
+    return replace(ref, q=y, qd=qd, path=f"{ref.path} (low-pass {cutoff_hz:g} Hz)")

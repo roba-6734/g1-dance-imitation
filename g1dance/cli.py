@@ -46,6 +46,16 @@ def add_run_args(p: argparse.ArgumentParser):
                    help="load-limited tempo: slow down only where the arm-induced torque/force on the body "
                         "would exceed these (e.g. 1.2:4.1 = level of the clean 0.5x hardware runs); "
                         "amplitude unchanged")
+    p.add_argument("--constant-tempo", action="store_true",
+                   help="with --max-load: one constant tempo for the whole dance (needed for --music)")
+    p.add_argument("--music-file", metavar="PATH",
+                   help="song for --music / the preview video (default: the dance video's own soundtrack)")
+    p.add_argument("--music-start", type=float, default=0.0, metavar="S",
+                   help="start this many seconds into the song")
+    p.add_argument("--music-stretch", action="store_true",
+                   help="time-stretch the song to the dance tempo (needs a constant tempo); default: natural speed")
+    p.add_argument("--smooth", type=float, metavar="HZ",
+                   help="low-pass the dance before planning (e.g. 2 or 3 Hz); removes jitter, lowers the arm load")
     p.add_argument("--out", default=str(ROOT / "runs"))
 
 
@@ -69,6 +79,10 @@ def resolve_config(a) -> RunConfig:
     if getattr(a, "max_load", None):
         tq, f = (float(x) for x in a.max_load.split(":"))
         cfg.speed.max_torque_nm, cfg.speed.max_force_n = tq, f
+    if getattr(a, "constant_tempo", False):
+        cfg.speed.constant_tempo = True
+    if getattr(a, "smooth", None):
+        cfg.speed.smooth_hz = float(a.smooth)
     return cfg
 
 
@@ -81,7 +95,10 @@ def print_load_limit(plan):
           f"min tempo {L['min_tempo']} at dance t={L['min_tempo_dance_t']} s, within limits: {L['within_limits']}")
     print(f"  peak load planned:  pitch {pk['pitch_nm']} roll {pk['roll_nm']} N m, force {pk['force_n']} N "
           f"(at recorded tempo: pitch {p1['pitch_nm']} roll {p1['roll_nm']} N m, force {p1['force_n']} N)")
-    print("  slowed passages [dance t0, t1, min tempo]: " + ", ".join(str(x) for x in L["slowed_passages"]))
+    if L.get("constant_tempo"):
+        print(f"  constant tempo {L['music_tempo']} for the whole dance")
+    else:
+        print("  slowed passages [dance t0, t1, min tempo]: " + ", ".join(str(x) for x in L["slowed_passages"]))
 
 
 def print_settings(cfg: RunConfig):
@@ -93,7 +110,9 @@ def print_settings(cfg: RunConfig):
     print(f"  speed={cfg.speed.speed} segments={cfg.speed.segments} ref_end={cfg.speed.ref_end_s}")
     if cfg.speed.max_torque_nm or cfg.speed.max_force_n:
         print(f"  load-limited tempo: max torque {cfg.speed.max_torque_nm} N m, max force {cfg.speed.max_force_n} N "
-              f"(window {cfg.speed.load_window_s} s)")
+              f"(window {cfg.speed.load_window_s} s, constant tempo {cfg.speed.constant_tempo})")
+    if cfg.speed.smooth_hz:
+        print(f"  reference low-pass: {cfg.speed.smooth_hz} Hz")
     g = cfg.gains
     print(f"  gains: arm kp={g.kp_arm} kd={g.kd_arm}  waist kp={g.kp_waist} kd={g.kd_waist}")
     print(f"  gates: {cfg.gates}")
@@ -204,13 +223,25 @@ def cmd_preview(a):
     if not a.no_video:
         from .render import render_video
         pb = np.flatnonzero(log["phase"] == 3)
-        unwarped = cfg.speed.speed == 1.0 and not cfg.speed.segments
-        audio = float(log["t"][pb[0]]) if (len(pb) and unwarped and not a.no_audio) else None
+        audio, wav = None, None
+        if len(pb) and not a.no_audio:
+            from .music import plan_music
+            try:
+                wav, delay, minfo = plan_music(plan, a.music_file, assets / VIDEO_FILE, run_dir / "music",
+                                               a.music_start, a.music_stretch)
+                audio = float(log["t"][pb[0]]) + delay
+                print(f"music: {minfo['source']} (stretched to {minfo['stretched_to_tempo']}), "
+                      f"from {a.music_start:.1f}s into the song")
+            except SystemExit as e:
+                print(f"no music in the video: {e}")
         g = cfg.gains
         notes = [f"scales arms={cfg.scales.arms} yaw={cfg.scales.waist_yaw}",
                  f"  roll={cfg.scales.waist_roll} pitch={cfg.scales.waist_pitch}"
                  + (" HOLD-WAIST" if cfg.hold_waist else ""),
                  f"speed={cfg.speed.speed} {cfg.speed.segments or ''}",
+                 *( [f"max-load {cfg.speed.max_torque_nm}:{cfg.speed.max_force_n}"
+                     + (" constant" if cfg.speed.constant_tempo else "")] if cfg.speed.max_torque_nm else []),
+                 *( [f"smooth {cfg.speed.smooth_hz} Hz"] if cfg.speed.smooth_hz else []),
                  f"kp arm/waist = {g.kp_arm:g}/{g.kp_waist:g}",
                  "legs: Unitree controller (not modelled;",
                  "  shown at nominal stand)",
@@ -218,7 +249,7 @@ def cmd_preview(a):
         if result.stop:
             notes += ["", "STOPPED: " + result.stop.check, "  " + result.stop.subject[:40]]
         vid = render_video(run_dir / "comparison.mp4", full, log, assets / VIDEO_FILE,
-                           f"G1 upper-body dance: {tag}", notes, audio)
+                           f"G1 upper-body dance: {tag}", notes, audio, wav)
         print(f"video: {vid}")
     print(f"run dir: {run_dir}")
     return run_dir

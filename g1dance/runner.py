@@ -83,7 +83,10 @@ class RunResult:
 def execute(plan: Plan, backend: Backend, cfg: RunConfig, monitor: Monitor,
             confirm_playback: Callable[[], bool] | None = None,
             waist_roll_pitch_actuated: bool = True,
-            operator_stop: Callable[[], bool] | None = None) -> RunResult:
+            operator_stop: Callable[[], bool] | None = None,
+            on_phase: Callable[[str], None] | None = None) -> RunResult:
+    """``on_phase(name)`` is called when each phase starts and with "abort" when a
+    stop is handled (used to start/stop music; it must not block)."""
     kp, kd = cfg.gains.vectors()
     ff = _Feedforward(cfg)
     log = RunLog(backend.data_kind)
@@ -112,31 +115,38 @@ def execute(plan: Plan, backend: Backend, cfg: RunConfig, monitor: Monitor,
     log.event("start", backend=backend.name, data_kind=backend.data_kind,
               mode_machine=first.mode_machine)
 
+    def _abort_notify(*args, **kw):
+        if on_phase is not None:
+            on_phase("abort")
+        return _abort(*args, **kw)
+
     names = [s.name for s in plan.segments]
     for si, seg in enumerate(plan.segments):
         log.event("phase", name=seg.name, ticks=len(seg.q))
+        if on_phase is not None:
+            on_phase(seg.name)
         for k in range(len(seg.q)):
             tr = None if np.isnan(seg.t_ref[k]) else float(seg.t_ref[k])
             stops = tick(seg.q[k], float(seg.weight[k]), seg.name, tr)
             if stops:
-                return _abort(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
+                return _abort_notify(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
         last_settle = seg.name == "settle" and (si + 1 == len(names) or names[si + 1] != "settle")
         if last_settle:
             # Gate: commanded AND measured pose must be at frame 0 before anything else.
             ok, gate_info, stops = _gate(plan, backend, cfg, tick, waist_roll_pitch_actuated, log)
             if stops:
-                return _abort(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
+                return _abort_notify(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
             if not ok:
                 stop = Stop("entry_gate", "; ".join(gate_info["failures"])[:300], 0.0, 0.0, "-",
                             "settle", log.t[-1])
-                return _abort([stop], plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
+                return _abort_notify([stop], plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
             if confirm_playback is not None and "playback" in names[si + 1:]:
                 ok2, stops = _hold_until(confirm_playback, plan.entry_target, tick)
                 if stops:
-                    return _abort(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
+                    return _abort_notify(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
                 if not ok2:
                     log.event("operator_declined_playback")
-                    return _abort([Stop("operator", "declined playback", 0, 0, "-", "settle", log.t[-1])],
+                    return _abort_notify([Stop("operator", "declined playback", 0, 0, "-", "settle", log.t[-1])],
                                   plan, backend, cfg, monitor, log, kp, kd, t0, gate_info)
     log.event("done", handed_back=True)
     return RunResult(True, None, log, gate_info)

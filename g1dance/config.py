@@ -78,6 +78,12 @@ class Speed:
     max_torque_nm: float | None = None
     max_force_n: float | None = None
     load_window_s: float = 0.5  # reference seconds the slowdown extends either side
+    # With the load limit: one constant tempo for the whole dance (the fastest that
+    # keeps every passage within the limits) instead of slowing passage by passage.
+    # Needed to play music in sync.
+    constant_tempo: bool = False
+    # Low-pass the reference before planning (Hz). None = the recording as is.
+    smooth_hz: float | None = None
 
     def at(self, t_ref: float) -> float:
         s = self.speed

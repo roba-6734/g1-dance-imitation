@@ -153,6 +153,9 @@ def build_plan(ref: UpperReference, start: np.ndarray, cfg: RunConfig) -> Plan:
     tm, dt = cfg.timing, cfg.timing.control_dt
     scales = cfg.effective_scales()
     margin = cfg.limits.pos_margin
+    if cfg.speed.smooth_hz:
+        from .reference import smooth_reference
+        ref = smooth_reference(ref, cfg.speed.smooth_hz)
     vcap = cfg.limits.vel_vector()
     steps = lambda sec: max(1, int(round(sec / dt)))
 
@@ -222,6 +225,8 @@ def _load_limited_playback(ref, start, scales, cfg, playback, max_iter: int = 8)
     qg = scaled(ref.q, start, scales)
     tau1, F1 = model.loads(qg, tg, ref.qd * scales)
     cap = tempo_cap(tg, tau1, F1, sp.max_torque_nm, sp.max_force_n, sp.load_window_s)
+    if sp.constant_tempo:
+        cap = np.full(len(tg), float(cap.min()))
 
     def ratio(tau, F):
         r = np.zeros(len(tau))
@@ -243,7 +248,10 @@ def _load_limited_playback(ref, start, scales, cfg, playback, max_iter: int = 8)
         for k in np.where(r > 1.0)[0]:
             j = int(np.clip(np.searchsorted(tg, t_ref[k]), 0, len(tg) - 1))
             fac[j] = min(fac[j], 0.97 / np.sqrt(r[k]))
-        cap = np.minimum(cap, _spread_min(tg, np.minimum(cap * fac, 1.0), sp.load_window_s))
+        if sp.constant_tempo:
+            cap = cap * float(fac.min())
+        else:
+            cap = np.minimum(cap, _spread_min(tg, np.minimum(cap * fac, 1.0), sp.load_window_s))
     p = peaks(tau, F)
     pk_tau, pk_f = p.pop("_i_tau"), p.pop("_i_force")
     p1 = peaks(*model.loads(qg, tg, ref.qd * scales))
@@ -260,7 +268,13 @@ def _load_limited_playback(ref, start, scales, cfg, playback, max_iter: int = 8)
         "min_tempo": round(float(cap.min()), 3), "min_tempo_dance_t": round(float(tg[int(cap.argmin())]), 2),
         "slowed_fraction_of_dance": round(float(slowed.mean()), 3),
         "slowed_passages": _passages(tg, cap),
+        "constant_tempo": bool(sp.constant_tempo),
     }
+    if sp.constant_tempo:
+        s = float(min(cap.min(), sp.speed))
+        # music runs at tempo s; it starts this long after playback starts (ramp-in lag)
+        info["music_tempo"] = round(s, 4)
+        info["music_delay_s"] = round(float((len(cmd) - 1) * dt - t_ref[-1] / s), 3)
     return (*out, info)
 
 
