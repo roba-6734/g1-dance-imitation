@@ -112,6 +112,15 @@ def run_report(log: dict, plan: Plan, ref: UpperReference, data_kind: str) -> di
     from .joints import WAIST_PITCH
     wp_err = qm[:, WAIST_PITCH] - qc[:, WAIST_PITCH]
     full = log["weight"] >= 1 - 1e-9
+    from .joints import G1_JOINT_NAMES
+    leg_dq = np.abs(log["dq_meas"][:, :12])
+    leg_dev = np.abs(log["q_meas"][:, :12] - log["q_meas"][0, :12])
+    out["legs_read_only"] = {
+        "max_speed_deg_s": round(float(D(leg_dq.max())), 1),
+        "max_speed_joint": G1_JOINT_NAMES[int(leg_dq.max(0).argmax())],
+        "max_speed_t": round(float(log["t"][int(leg_dq.max(1).argmax())]), 2),
+        "max_deviation_from_start_deg": round(float(D(leg_dev.max())), 2),
+    }
     out["waist_pitch_measurements"] = {
         "waist_joint_pitch_max_deg": round(float(D(np.max(np.abs(qm[:, WAIST_PITCH])))), 3),
         "waist_pitch_error_max_deg(weight=1)": round(float(D(np.max(np.abs(wp_err[full])))) if full.any() else 0.0, 3),

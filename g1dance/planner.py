@@ -63,6 +63,7 @@ class Plan:
     entry_target: np.ndarray  # what we command at the end of entry
     segments: list[Segment]
     limit_events: list[LimitEvent] = field(default_factory=list)
+    load_limit: dict | None = None  # load-limited tempo report (None when off)
     entry_duration: float = 0.0
     return_duration: float = 0.0
 
@@ -86,14 +87,17 @@ def scaled(ref_q: np.ndarray, anchor: np.ndarray, scales: np.ndarray) -> np.ndar
     return anchor + scales * (ref_q - anchor)
 
 
-def playback_clock(cfg: RunConfig, duration: float) -> np.ndarray:
-    """Reference-time samples at each control tick, integrating the speed profile."""
+def playback_clock(cfg: RunConfig, duration: float, cap=None) -> np.ndarray:
+    """Reference-time samples at each control tick, integrating the speed profile.
+    ``cap(t_ref)``, if given, is an upper bound on the tempo (load-limited tempo)."""
     end = duration if cfg.speed.ref_end_s is None else min(duration, cfg.speed.ref_end_s)
     dt = cfg.timing.control_dt
     ts = [0.0]
     ramp = cfg.speed.ramp_in_s
     while ts[-1] < end - 1e-9:
         sp = cfg.speed.at(ts[-1])
+        if cap is not None:
+            sp = min(sp, float(cap(ts[-1])))
         if sp <= 0:
             raise ValueError("playback speed must be > 0")
         if ramp > 0:
@@ -174,12 +178,20 @@ def build_plan(ref: UpperReference, start: np.ndarray, cfg: RunConfig) -> Plan:
     segs.append(_named(_hold(target, steps(tm.entry_settle_s)), "settle"))
 
     # 4. playback from frame 0.
-    t_ref = playback_clock(cfg, ref.duration)
-    ref_q, _ = ref.sample(t_ref)
-    ideal = scaled(ref_q, start, scales)
-    clipped = clip_limits(ideal, margin)
-    cmd = rate_limit(target, clipped, vcap, dt)
-    cmd[0] = target  # frame 0 == entry target by construction
+    def playback(cap=None):
+        t_ref = playback_clock(cfg, ref.duration, cap)
+        ref_q, _ = ref.sample(t_ref)
+        ideal = scaled(ref_q, start, scales)
+        clipped = clip_limits(ideal, margin)
+        cmd = rate_limit(target, clipped, vcap, dt)
+        cmd[0] = target  # frame 0 == entry target by construction
+        return t_ref, ideal, clipped, cmd
+
+    load_info = None
+    if cfg.speed.max_torque_nm or cfg.speed.max_force_n:
+        t_ref, ideal, clipped, cmd, load_info = _load_limited_playback(ref, start, scales, cfg, playback)
+    else:
+        t_ref, ideal, clipped, cmd = playback()
     events = _limit_events(t_ref, ideal, clipped, cmd)
     segs.append(Segment("playback", cmd, np.ones(len(cmd)), t_ref, ideal))
 
@@ -195,8 +207,76 @@ def build_plan(ref: UpperReference, start: np.ndarray, cfg: RunConfig) -> Plan:
     segs.append(_named(_hold(start, steps(tm.release_s), 1.0, 0.0), "release"))
 
     return Plan(dt=dt, start=start, ref_frame0=f0.copy(), entry_target_ideal=target_ideal,
-                entry_target=target, segments=segs, limit_events=events,
+                entry_target=target, segments=segs, limit_events=events, load_limit=load_info,
                 entry_duration=n_entry * dt, return_duration=n_ret * dt)
+
+
+def _load_limited_playback(ref, start, scales, cfg, playback, max_iter: int = 8):
+    """Cap the tempo where the arm load would exceed cfg.speed.max_torque_nm /
+    max_force_n, then verify on the actual playback command (which includes the
+    speed profile, ramp-in, clipping and rate limits) and tighten until it holds."""
+    from .load import ArmLoadModel, _spread_min, peaks, tempo_cap
+    sp, dt = cfg.speed, cfg.timing.control_dt
+    model = ArmLoadModel()
+    tg = np.arange(ref.n) / ref.fps
+    qg = scaled(ref.q, start, scales)
+    tau1, F1 = model.loads(qg, tg, ref.qd * scales)
+    cap = tempo_cap(tg, tau1, F1, sp.max_torque_nm, sp.max_force_n, sp.load_window_s)
+
+    def ratio(tau, F):
+        r = np.zeros(len(tau))
+        if sp.max_torque_nm:
+            r = np.maximum(r, np.abs(tau[:, :2]).max(1) / sp.max_torque_nm)
+        if sp.max_force_n:
+            r = np.maximum(r, np.hypot(F[:, 0], F[:, 1]) / sp.max_force_n)
+        return r
+
+    for it in range(1, max_iter + 1):
+        out = playback(lambda tr: np.interp(tr, tg, cap))
+        t_ref, cmd = out[0], out[3]
+        tau, F = model.loads(cmd, np.arange(len(cmd)) * dt)
+        r = ratio(tau, F)
+        if r.max() <= 1.0 or it == max_iter:
+            break
+        # tighten the cap where the verified load is over the limit
+        fac = np.ones(len(tg))
+        for k in np.where(r > 1.0)[0]:
+            j = int(np.clip(np.searchsorted(tg, t_ref[k]), 0, len(tg) - 1))
+            fac[j] = min(fac[j], 0.97 / np.sqrt(r[k]))
+        cap = np.minimum(cap, _spread_min(tg, np.minimum(cap * fac, 1.0), sp.load_window_s))
+    p = peaks(tau, F)
+    pk_tau, pk_f = p.pop("_i_tau"), p.pop("_i_force")
+    p1 = peaks(*model.loads(qg, tg, ref.qd * scales))
+    p1.pop("_i_tau"), p1.pop("_i_force")
+    slowed = cap < 0.99
+    info = {
+        "data_kind": "kinematic model estimate (g1dance/load.py)",
+        "max_torque_nm": sp.max_torque_nm, "max_force_n": sp.max_force_n,
+        "load_window_s": sp.load_window_s, "iterations": it, "within_limits": bool(r.max() <= 1.0 + 1e-6),
+        "peak_load_planned": {k: round(v, 2) for k, v in p.items()},
+        "peak_load_at": {"torque_dance_t": round(float(t_ref[pk_tau]), 2), "force_dance_t": round(float(t_ref[pk_f]), 2)},
+        "peak_load_recorded_tempo": {k: round(v, 2) for k, v in p1.items()},
+        "playback_s": round(len(cmd) * dt, 2), "recorded_s": round(ref.duration, 2),
+        "min_tempo": round(float(cap.min()), 3), "min_tempo_dance_t": round(float(tg[int(cap.argmin())]), 2),
+        "slowed_fraction_of_dance": round(float(slowed.mean()), 3),
+        "slowed_passages": _passages(tg, cap),
+    }
+    return (*out, info)
+
+
+def _passages(t: np.ndarray, cap: np.ndarray, thr: float = 0.99) -> list[list[float]]:
+    on = cap < thr
+    out, k = [], 0
+    while k < len(t):
+        if on[k]:
+            j = k
+            while j + 1 < len(t) and on[j + 1]:
+                j += 1
+            out.append([round(float(t[k]), 2), round(float(t[j]), 2), round(float(cap[k:j + 1].min()), 2)])
+            k = j + 1
+        else:
+            k += 1
+    return out
 
 
 def build_entry_only_plan(ref: UpperReference, start: np.ndarray, cfg: RunConfig) -> Plan:

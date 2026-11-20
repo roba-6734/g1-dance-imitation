@@ -42,6 +42,10 @@ def add_run_args(p: argparse.ArgumentParser):
     p.add_argument("--slow", action="append", default=[], metavar="T0:T1:FACTOR",
                    help="extra speed factor for dance seconds T0..T1 (e.g. 8:11:0.5); amplitude unchanged")
     p.add_argument("--ref-end", type=float, help="stop playback at this dance time [s]")
+    p.add_argument("--max-load", metavar="TORQUE_NM:FORCE_N",
+                   help="load-limited tempo: slow down only where the arm-induced torque/force on the body "
+                        "would exceed these (e.g. 1.2:4.1 = level of the clean 0.5x hardware runs); "
+                        "amplitude unchanged")
     p.add_argument("--out", default=str(ROOT / "runs"))
 
 
@@ -62,7 +66,22 @@ def resolve_config(a) -> RunConfig:
         cfg.speed.segments.append([t0, t1, f])
     if a.ref_end is not None:
         cfg.speed.ref_end_s = float(a.ref_end)
+    if getattr(a, "max_load", None):
+        tq, f = (float(x) for x in a.max_load.split(":"))
+        cfg.speed.max_torque_nm, cfg.speed.max_force_n = tq, f
     return cfg
+
+
+def print_load_limit(plan):
+    L = plan.load_limit
+    if not L:
+        return
+    pk, p1 = L["peak_load_planned"], L["peak_load_recorded_tempo"]
+    print(f"load-limited tempo ({L['data_kind']}): {L['recorded_s']} s of dance in {L['playback_s']} s, "
+          f"min tempo {L['min_tempo']} at dance t={L['min_tempo_dance_t']} s, within limits: {L['within_limits']}")
+    print(f"  peak load planned:  pitch {pk['pitch_nm']} roll {pk['roll_nm']} N m, force {pk['force_n']} N "
+          f"(at recorded tempo: pitch {p1['pitch_nm']} roll {p1['roll_nm']} N m, force {p1['force_n']} N)")
+    print("  slowed passages [dance t0, t1, min tempo]: " + ", ".join(str(x) for x in L["slowed_passages"]))
 
 
 def print_settings(cfg: RunConfig):
@@ -72,6 +91,9 @@ def print_settings(cfg: RunConfig):
           f"waist_pitch={s.waist_pitch} hold_waist={cfg.hold_waist}")
     print(f"  effective per-joint scale: {np.round(cfg.effective_scales(), 3).tolist()}")
     print(f"  speed={cfg.speed.speed} segments={cfg.speed.segments} ref_end={cfg.speed.ref_end_s}")
+    if cfg.speed.max_torque_nm or cfg.speed.max_force_n:
+        print(f"  load-limited tempo: max torque {cfg.speed.max_torque_nm} N m, max force {cfg.speed.max_force_n} N "
+              f"(window {cfg.speed.load_window_s} s)")
     g = cfg.gains
     print(f"  gains: arm kp={g.kp_arm} kd={g.kd_arm}  waist kp={g.kp_waist} kd={g.kd_waist}")
     print(f"  gates: {cfg.gates}")
@@ -170,6 +192,9 @@ def cmd_preview(a):
     extra = {"backend": backend.name, "start_pose_source": start_src, "start_pose_rad": start.tolist(),
              "assets": {UPPER_FILE: sha256(assets / UPPER_FILE)},
              "kinematic": kin, "simulated": sim}
+    if plan.load_limit:
+        extra["load_limit"] = plan.load_limit
+    print_load_limit(plan)
     write_run(run_dir, result, cfg, extra)
     np.savez_compressed(run_dir / "plan.npz", **plan.flat(), start=plan.start, entry_target=plan.entry_target)
     _print_summary(kin, sim, result)

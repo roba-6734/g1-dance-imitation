@@ -53,3 +53,8 @@ imu_pitch_delta = 0.12
 imu_roll_delta = 0.10
 joint_speed = 6.0
 state_timeout_s = 0.10
+# Stop the dance when Unitree's balance controller starts stepping (legs are only READ).
+# Clean runs peaked at 1.03 rad/s on any leg joint; steps exceeded 2.2 rad/s (FINDINGS 4q).
+# Set to 0 to disable.
+leg_step_dq = 1.5
+leg_step_ticks = 2

@@ -53,7 +53,7 @@ def _ask(prompt: str, expect: str) -> bool:
 
 
 def run(a):
-    from ..cli import print_settings, resolve_config
+    from ..cli import print_load_limit, print_settings, resolve_config
     from ..metrics import kinematic_report, run_report
     from ..monitor import Monitor
     from ..planner import build_acquire_only_plan, build_entry_only_plan, build_plan, build_recover_plan
@@ -115,6 +115,7 @@ def run(a):
     for j, n in enumerate(UPPER_NAMES):
         print(f"   {n:28s} {D(start[j]):+8.2f} -> {D(plan.entry_target[j]):+8.2f}")
     total = sum(len(s.q) for s in plan.segments) * plan.dt
+    print_load_limit(plan)
     print(f"planned duration {total:.1f}s (entry {plan.entry_duration:.1f}s)")
 
     if live:
@@ -147,6 +148,8 @@ def run(a):
              "response": run_report(log, plan, ref, backend.data_kind)}
     if a.stage in ("playback", "full"):
         extra["kinematic"] = kinematic_report(plan, ref)
+        if plan.load_limit:
+            extra["load_limit"] = plan.load_limit
     if live:
         extra["control_overruns"] = backend.overruns
     write_run(run_dir, result, cfg, extra)

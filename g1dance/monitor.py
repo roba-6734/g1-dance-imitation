@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .config import Gates
-from .joints import N_UPPER, UPPER_IDS, UPPER_NAMES, WAIST_PITCH, WAIST_ROLL
+from .joints import G1_JOINT_NAMES, LEG_IDS, N_UPPER, UPPER_IDS, UPPER_NAMES, WAIST_PITCH, WAIST_ROLL
 
 MOTION_PHASES = ("acquire", "entry", "settle", "playback", "end_hold", "return", "release")
 
@@ -72,6 +72,13 @@ class Monitor:
         self.track = gates.track_vector()
         self.imu0: np.ndarray | None = None
         self.waist_rp = waist_roll_pitch_actuated
+        self._leg_fast_ticks = 0
+
+    def leg_speed(self, state: RobotState) -> tuple[float, str]:
+        """Largest |dq| over the leg joints (read-only) and which joint."""
+        d = np.abs(np.asarray(state.dq, float)[list(LEG_IDS)])
+        i = int(np.argmax(d))
+        return float(np.asarray(state.dq, float)[LEG_IDS[i]]), G1_JOINT_NAMES[LEG_IDS[i]]
 
     def capture_reference_attitude(self, state: RobotState):
         self.imu0 = np.array(state.imu_rpy, float)
@@ -118,6 +125,11 @@ class Monitor:
         for j in range(N_UPPER):
             if abs(dq[j]) > g.joint_speed:
                 out.append(mk("joint_speed", UPPER_NAMES[j], dq[j], g.joint_speed, "rad/s"))
+        if g.leg_step_dq > 0:
+            v, name = self.leg_speed(state)
+            self._leg_fast_ticks = self._leg_fast_ticks + 1 if abs(v) > g.leg_step_dq else 0
+            if self._leg_fast_ticks >= max(1, int(g.leg_step_ticks)):
+                out.append(mk("leg_step", name, v, g.leg_step_dq, "rad/s"))
         return out
 
 

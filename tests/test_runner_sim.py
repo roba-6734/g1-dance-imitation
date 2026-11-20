@@ -66,3 +66,32 @@ def test_dq_feedforward_reduces_waist_lag_in_sim(ref):
         errs.append(np.abs(a["q_meas"][m, 14] - a["q_cmd"][m, 2]).max())
         assert r.completed
     assert errs[1] < errs[0]
+
+
+def test_leg_step_stops_holds_until_quiet_then_returns_slowly(ref):
+    """Inject a Unitree 'step' (fast leg joint) into the sim state mid-playback."""
+    from g1dance.runner import execute
+    from g1dance.sim import SimBackend, assumed_start_upper
+    cfg = load_config(ROOT / "configs" / "default.toml")
+    cfg.speed.ref_end_s = 4.0
+    b = SimBackend(assumed_start_upper(), cfg.timing.control_dt)
+    real_read, n = b.read_state, {"k": 0, "first": None}
+
+    def read_state():
+        st = real_read()
+        n["k"] += 1
+        if 500 <= n["k"] < 560:  # ~1.2 s of stepping during playback
+            st.dq = st.dq.copy()
+            st.dq[9] = 4.0
+        return st
+    b.read_state = read_state
+    start = real_read().upper_q
+    p = build_plan(ref, start, cfg)
+    r = execute(p, b, cfg, Monitor(cfg.gates))
+    assert not r.completed and r.stop.check == "leg_step" and r.stop.subject == "right_knee_joint"
+    assert r.stop.phase == "playback"
+    acts = [e["action"] for e in r.log.events if e["kind"] == "abort"]
+    assert any("leg step: holding" in a for a in acts) and any("legs quiet after" in a for a in acts)
+    assert any("slowed" in a for a in acts)
+    log = r.log.arrays()
+    assert log["weight"][-1] == 0.0 and np.allclose(log["q_cmd"][-1], start)

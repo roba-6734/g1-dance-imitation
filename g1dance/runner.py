@@ -218,8 +218,17 @@ def _abort(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info) -> Ru
     v = np.full(N_UPPER, cfg.timing.entry_arm_vel)
     v[:3] = cfg.timing.entry_waist_vel
     T = min_jerk_duration(plan.start - q_here, v, cfg.timing.return_min_s)
-    path = np.concatenate([np.repeat(q_here[None], int(0.5 / dt), 0),
-                           min_jerk(q_here, plan.start, max(1, int(round(T / dt))))])
+    if any(s.check == "leg_step" for s in stops):
+        stepped = _hold_while_stepping(q_here, backend, cfg, monitor, log, kp, kd, t0)
+        if stepped is not None:  # a second fault during the hold
+            return RunResult(False, first, log, gate_info)
+        q_here = backend.read_state().upper_q.copy()
+        T = min_jerk_duration(plan.start - q_here, v, cfg.timing.return_min_s) * cfg.timing.step_return_slowdown
+        log.event("abort", action=f"legs quiet: returning to start over {T:.1f}s (slowed x{cfg.timing.step_return_slowdown})")
+        path = min_jerk(q_here, plan.start, max(1, int(round(T / dt))))
+    else:
+        path = np.concatenate([np.repeat(q_here[None], int(0.5 / dt), 0),
+                               min_jerk(q_here, plan.start, max(1, int(round(T / dt))))])
     for q in path:
         s2 = backend.read_state()
         now = backend.now()
@@ -236,6 +245,39 @@ def _abort(stops, plan, backend, cfg, monitor, log, kp, kd, t0, gate_info) -> Ru
         backend.wait_tick()
     _release(backend, log, plan.start, cfg, kp, kd, t0)
     return RunResult(False, first, log, gate_info)
+
+
+def _hold_while_stepping(q_hold, backend, cfg, monitor, log, kp, kd, t0):
+    """Hold the arms still while Unitree's balance controller finishes stepping.
+    Returns None when the legs are quiet (or the hold times out), or a Stop if a
+    second fault (freshness / joint speed) forced an immediate release."""
+    dt = cfg.timing.control_dt
+    quiet_need = max(1, int(round(cfg.timing.step_quiet_s / dt)))
+    max_ticks = max(1, int(round(cfg.timing.step_hold_max_s / dt)))
+    log.event("abort", action=f"leg step: holding measured pose until legs quiet for {cfg.timing.step_quiet_s}s "
+                              f"(max {cfg.timing.step_hold_max_s}s)")
+    quiet = 0
+    for i in range(max_ticks):
+        s2 = backend.read_state()
+        now = backend.now()
+        log.record(now - t0, "return", None, q_hold, 1.0, s2)
+        sec = [x for x in monitor.check(s2, q_hold, 1.0, "return", now - t0, now, tracking=False)
+               if x.check in ("state_freshness", "joint_speed")]
+        if sec:
+            for s in sec:
+                log.event("stop", **s.as_dict())
+            log.event("abort", action="second fault: immediate release")
+            _release(backend, log, s2.upper_q.copy(), cfg, kp, kd, t0)
+            return sec[0]
+        v, _ = monitor.leg_speed(s2)
+        quiet = quiet + 1 if abs(v) < 0.5 * cfg.gates.leg_step_dq else 0
+        backend.send(q_hold, kp, kd, 1.0)
+        backend.wait_tick()
+        if quiet >= quiet_need:
+            log.event("abort", action=f"legs quiet after {(i + 1) * dt:.2f}s")
+            return None
+    log.event("abort", action=f"legs not quiet after {cfg.timing.step_hold_max_s}s: returning anyway")
+    return None
 
 
 def _release(backend, log, q, cfg, kp, kd, t0, monitor_only=None):

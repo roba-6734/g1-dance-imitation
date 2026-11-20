@@ -84,3 +84,35 @@ def test_entry_gate_checks_command_and_measurement():
     meas[WAIST_PITCH] += np.radians(13.9)
     r = entry_gate(tgt, tgt, meas, g)
     assert not r.passed and any("measured waist_pitch_joint" in f for f in r.failures)
+
+
+def _leg_state(leg_dq_val, joint=9):
+    s = state()
+    s.dq = np.zeros(29)
+    s.dq[joint] = leg_dq_val
+    return s
+
+
+def test_leg_step_needs_consecutive_ticks_and_names_joint():
+    g = Gates()
+    m = Monitor(g)
+    cmd = np.zeros(17)
+    fast = g.leg_step_dq + 0.5
+    assert not [s for s in m.check(_leg_state(fast), cmd, 1.0, "playback", 1.0, now=0.0) if s.check == "leg_step"]
+    assert not [s for s in m.check(_leg_state(0.0), cmd, 1.0, "playback", 1.02, now=0.0) if s.check == "leg_step"]
+    m.check(_leg_state(fast), cmd, 1.0, "playback", 1.04, now=0.0)
+    st = [s for s in m.check(_leg_state(-fast), cmd, 1.0, "playback", 1.06, now=0.0) if s.check == "leg_step"]
+    assert len(st) == 1 and st[0].subject == "right_knee_joint" and st[0].unit == "rad/s"
+    assert st[0].value == -fast and st[0].threshold == g.leg_step_dq
+    assert "leg_step" in st[0].message() and "right_knee_joint" in st[0].message()
+
+
+def test_leg_step_below_threshold_and_disabled():
+    g = Gates()
+    m = Monitor(g)
+    for _ in range(10):  # the clean 0.5x run peaked at 1.03 rad/s
+        assert not [s for s in m.check(_leg_state(1.03), np.zeros(17), 1.0, "playback", 0, now=0.0) if s.check == "leg_step"]
+    g0 = Gates(leg_step_dq=0.0)
+    m0 = Monitor(g0)
+    for _ in range(10):
+        assert not [s for s in m0.check(_leg_state(20.0), np.zeros(17), 1.0, "playback", 0, now=0.0) if s.check == "leg_step"]

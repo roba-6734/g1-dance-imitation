@@ -52,6 +52,12 @@ class Timing:
     return_min_s: float = 4.0
     release_hold_s: float = 0.5
     release_s: float = 2.0  # weight 1 -> 0 while commanding the measured start pose
+    # After a leg_step stop: hold the measured pose until the legs are quiet
+    # (all leg |dq| < leg_step_dq/2 for step_quiet_s, at most step_hold_max_s), then
+    # return to start step_return_slowdown x slower than a normal abort.
+    step_quiet_s: float = 1.0
+    step_hold_max_s: float = 4.0
+    step_return_slowdown: float = 1.5
 
 
 @dataclass
@@ -65,6 +71,13 @@ class Speed:
     # playback clock from 0 to full speed over that many wall seconds (time warp
     # only: frame 0 and amplitudes unchanged). 0 = start at full speed (faithful).
     ramp_in_s: float = 0.0
+    # Load-limited tempo (FINDINGS 4r): slow down only where the arm-induced load on
+    # the body (model estimate, g1dance/load.py) would exceed these limits. The load
+    # grows with tempo^2. None = off. The clean 0.5x hardware runs peaked at about
+    # 1.2 N m (pitch/roll) and 4.1 N; steps followed loads of 1.7-4.3 N m / 5-10 N.
+    max_torque_nm: float | None = None
+    max_force_n: float | None = None
+    load_window_s: float = 0.5  # reference seconds the slowdown extends either side
 
     def at(self, t_ref: float) -> float:
         s = self.speed
@@ -138,6 +151,11 @@ class Gates:
     # Measured joint speed and state freshness.
     joint_speed: float = 6.0
     state_timeout_s: float = 0.10
+    # Unitree balance step: any LEG joint (read-only) faster than this for N consecutive
+    # control ticks. Non-stepping hardware runs peaked at 1.03 rad/s (59 deg/s); every
+    # step seen so far exceeded 2.2 rad/s. 0 disables. See FINDINGS 4k-4q.
+    leg_step_dq: float = 1.5
+    leg_step_ticks: int = 2
 
     def track_vector(self) -> np.ndarray:
         v = np.full(N_UPPER, float(self.track_arm))
