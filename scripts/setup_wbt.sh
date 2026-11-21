@@ -2,6 +2,7 @@
 # Set up whole-body tracking training (unitree_rl_mjlab, BeyondMimic re-implementation) on a CUDA box.
 #   ./scripts/setup_wbt.sh            clone + check
 #   ./scripts/setup_wbt.sh --env      also create the conda env "unitree_rl_mjlab" (python 3.11) and pip install -e
+#   TORCH_CUDA=cu126 ./scripts/setup_wbt.sh --env   ... with a torch build for driver 525-579 (e.g. A5000 nodes, 535)
 # Target: one CUDA GPU (A5000 24 GB / RTX 50xx), Ubuntu 22.04, NVIDIA driver >= 550 (Unitree's stated requirements;
 # RTX 50xx needs a CUDA 12.8+ PyTorch build). Re-running is safe: finished steps are skipped.
 set -euo pipefail
@@ -24,6 +25,13 @@ if [ "${1:-}" = "--env" ]; then
   # warp-lang >= 1.13 dropped warp.context, which mjlab 1.2.0 reads (sim.py _should_use_cuda_graph); 1.12.1 is
   # the newest release that has it, built with CUDA 12.9 (supports RTX 50xx / sm_120).
   conda run --no-capture-output -n unitree_rl_mjlab python -m pip install "mujoco==3.5.0" "warp-lang==1.12.1"
+  # PyTorch must match the DRIVER OF THE NODE THAT TRAINS, not the login node. pip's default torch is built for
+  # the newest CUDA (needs driver >= 580). For older drivers set TORCH_CUDA, e.g. TORCH_CUDA=cu126 for driver
+  # 525-579 (A5000 nodes with 535). cu126 has no RTX 50xx (sm_120) kernels; cu128 has both but needs >= 570.
+  if [ -n "${TORCH_CUDA:-}" ]; then
+    conda run --no-capture-output -n unitree_rl_mjlab python -m pip install "torch==${TORCH_VERSION:-2.14.1}" \
+      --index-url "https://download.pytorch.org/whl/$TORCH_CUDA"
+  fi
   # our evaluation tools run in the same env (CPU MuJoCo + onnxruntime)
   conda run --no-capture-output -n unitree_rl_mjlab python -m pip install onnxruntime pyyaml scipy pillow matplotlib
 fi
