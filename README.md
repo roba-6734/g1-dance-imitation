@@ -181,4 +181,8 @@ g1dance/hw/           unitree.py (SDK I/O), check.py (read-only), trial.py (stag
 video2ref/pipeline.py video -> GVHMR -> GMR -> qpos -> 50 Hz reference driver (python -m video2ref)
 video2ref/video.py    ffprobe/ffmpeg normalisation; retarget.py GMR call; validate.py screens
 video2ref/upper.py    30 Hz full body -> 50 Hz upper-body npz (python -m video2ref.upper)
+video2ref/nmr.py      GVHMR -> pretrained NMR retargeter -> same outputs as GMR (A/B); compare.py A/B reports
+wbt/                  whole-body tracking: prepare, feasibility, train (A5000), sim2sim gates, deploy package
 ```
+
+Whole-body tracking and the NMR-vs-GMR experiment are documented in [`wbt/README.md`](wbt/README.md). That file covers training on the A5000, the sim-to-sim readiness gates, the deploy-side safety patch and the hardware trial ladder.

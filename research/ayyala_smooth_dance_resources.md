@@ -26,7 +26,7 @@ video → GVHMR → GMR (per-frame IK) → 3-frame mean → linear 30→50 Hz �
 
 | Option | Notes |
 | --- | --- |
-| **NMR (neural motion retargeting)**, arXiv [2603.22201](https://arxiv.org/pdf/2603.22201) | Learned retargeter that smooths implicitly; jitter 1.63 vs GMR 7.94 in the BeyondRetarget comparison. Check for code. |
+| **NMR (neural motion retargeting)**, arXiv [2603.22201](https://arxiv.org/pdf/2603.22201) | Learned retargeter that smooths implicitly; jitter 1.63 vs GMR 7.94 in the BeyondRetarget comparison. **Update 2026-11-21: pretrained and usable.** Code: [NJU3DV-HumanoidGroup/MakeTrackingEasy](https://github.com/NJU3DV-HumanoidGroup/MakeTrackingEasy); weights: Hugging Face `RayZhao/NMR`. G1 29-DoF only; input is SMPL-X `transl/global_orient/body_pose`, which is exactly what GVHMR writes. Training code and data are not released, and the repository has **no LICENSE**. Integrated as `video2ref/nmr.py`; see `wbt/README.md`. |
 | **BeyondRetarget**, arXiv [2609.29850](https://arxiv.org/pdf/2609.29850) | End-to-end video → executable G1 motion, so there is no separate HMR+retarget step. No public code found yet. |
 | **DuoMo**, arXiv [2603.03265](https://arxiv.org/html/2603.03265) | Diffusion world-space HMR; reports a 30 % world-error reduction on RICH and low foot skating. A possible GVHMR replacement. |
 | **SAM 3D Body world-coordinate retargeting**, arXiv [2512.21573](https://arxiv.org/abs/2512.21573v1) | Another monocular → humanoid route. |

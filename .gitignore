@@ -7,3 +7,5 @@ motion_assets/
 docs/
 configs/hpc.env
 outputs/
+wbt_deploy/
+wbt_motions/
