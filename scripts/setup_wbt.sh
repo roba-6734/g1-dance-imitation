@@ -21,7 +21,9 @@ if [ "${1:-}" = "--env" ]; then
   conda env list | grep -q '^unitree_rl_mjlab ' || conda create -y -n unitree_rl_mjlab python=3.11
   conda run --no-capture-output -n unitree_rl_mjlab python -m pip install -e "$DIR"
   # mujoco-warp 3.5.0 only asks for mujoco>=3.4, but MuJoCo 4.0 removed mjENBL_MULTICCD, which it uses at import.
-  conda run --no-capture-output -n unitree_rl_mjlab python -m pip install "mujoco==3.5.0"
+  # warp-lang >= 1.13 dropped warp.context, which mjlab 1.2.0 reads (sim.py _should_use_cuda_graph); 1.12.1 is
+  # the newest release that has it, built with CUDA 12.9 (supports RTX 50xx / sm_120).
+  conda run --no-capture-output -n unitree_rl_mjlab python -m pip install "mujoco==3.5.0" "warp-lang==1.12.1"
   # our evaluation tools run in the same env (CPU MuJoCo + onnxruntime)
   conda run --no-capture-output -n unitree_rl_mjlab python -m pip install onnxruntime pyyaml scipy pillow matplotlib
 fi
