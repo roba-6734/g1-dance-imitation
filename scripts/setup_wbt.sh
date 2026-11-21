@@ -19,9 +19,9 @@ echo "unitree_rl_mjlab at $(git -C "$DIR" rev-parse --short HEAD)"
 if [ "${1:-}" = "--env" ]; then
   command -v conda >/dev/null || { echo "conda not found (see $DIR/doc/setup_en.md)"; exit 1; }
   conda env list | grep -q '^unitree_rl_mjlab ' || conda create -y -n unitree_rl_mjlab python=3.11
-  conda run -n unitree_rl_mjlab python -m pip install -e "$DIR"
+  conda run --no-capture-output -n unitree_rl_mjlab python -m pip install -e "$DIR"
   # our evaluation tools run in the same env (CPU MuJoCo + onnxruntime)
-  conda run -n unitree_rl_mjlab python -m pip install onnxruntime pyyaml scipy pillow matplotlib
+  conda run --no-capture-output -n unitree_rl_mjlab python -m pip install onnxruntime pyyaml scipy pillow matplotlib
 fi
 
 # The exact G1 model training uses (mjlab 1.2.0 asset_zoo), copied for our CPU tools outside the training env.
@@ -43,7 +43,7 @@ else
 fi
 if conda env list 2>/dev/null | grep -q '^unitree_rl_mjlab '; then
   echo "GPU check (torch + warp must both see the card):"
-  conda run -n unitree_rl_mjlab python -c "
+  conda run --no-capture-output -n unitree_rl_mjlab python -c "
 import torch
 print('torch', torch.__version__, 'CUDA', torch.version.cuda, 'available', torch.cuda.is_available())
 if torch.cuda.is_available():
