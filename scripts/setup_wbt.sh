@@ -20,6 +20,8 @@ if [ "${1:-}" = "--env" ]; then
   command -v conda >/dev/null || { echo "conda not found (see $DIR/doc/setup_en.md)"; exit 1; }
   conda env list | grep -q '^unitree_rl_mjlab ' || conda create -y -n unitree_rl_mjlab python=3.11
   conda run --no-capture-output -n unitree_rl_mjlab python -m pip install -e "$DIR"
+  # mujoco-warp 3.5.0 only asks for mujoco>=3.4, but MuJoCo 4.0 removed mjENBL_MULTICCD, which it uses at import.
+  conda run --no-capture-output -n unitree_rl_mjlab python -m pip install "mujoco==3.5.0"
   # our evaluation tools run in the same env (CPU MuJoCo + onnxruntime)
   conda run --no-capture-output -n unitree_rl_mjlab python -m pip install onnxruntime pyyaml scipy pillow matplotlib
 fi
@@ -49,6 +51,8 @@ print('torch', torch.__version__, 'CUDA', torch.version.cuda, 'available', torch
 if torch.cuda.is_available():
     print('device', torch.cuda.get_device_name(0), 'capability', torch.cuda.get_device_capability(0))
     print('kernel test', (torch.ones(4, device='cuda') * 2).sum().item())
+import mujoco, mujoco_warp, mjlab
+print('mujoco', mujoco.__version__, '+ mujoco_warp + mjlab import ok')
 import warp as wp
 wp.init()
 print('warp', wp.config.version, 'devices', wp.get_cuda_devices())
