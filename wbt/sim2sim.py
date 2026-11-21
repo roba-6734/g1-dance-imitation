@@ -289,8 +289,14 @@ def run_scenario(cfg, motion, policy, sc: Scenario, time_start=0.0, time_end=Non
 
 
 def check_metadata(cfg: DeployCfg, meta: dict) -> list[str]:
-    """Compare deploy.yaml against what training actually used (mjlab ONNX metadata)."""
+    """Compare deploy.yaml against what training actually used (mjlab ONNX metadata).
+    Missing metadata is a problem, not a pass: nothing could be compared."""
     problems = []
+    required = ("joint_names", "joint_stiffness", "joint_damping", "default_joint_pos", "action_scale",
+                "observation_names")
+    missing = [k for k in required if k not in meta]
+    if missing:
+        problems.append(f"training metadata lacks {missing} (pass the <run>.onnx export via --onnx-meta)")
     names = meta.get("joint_names")
     if names is not None and list(names) != list(G1_JOINT_NAMES):
         problems.append("policy joint order differs from SDK order; deploy needs a joint_ids_map")
@@ -353,7 +359,8 @@ def gate(det, rnd, meta_problems, gates=GATES):
         rate = np.mean([r.success for r in rnd])
         add(f"randomised success ({len(rnd)} runs)", rate >= gates["random_success_min"],
             f"{rate * 100:.0f}% (min {gates['random_success_min'] * 100:.0f}%)")
-    add("deploy.yaml matches training metadata", not meta_problems, "; ".join(meta_problems) or "ok / not checked")
+    add("deploy.yaml matches training metadata", not meta_problems,
+        "; ".join(meta_problems) or "joint order, gains, default pose, action scale and observation order all match")
     return checks
 
 
@@ -396,7 +403,8 @@ def main(argv=None):
     cfg = load_deploy_yaml(a.deploy_yaml)
     motion = load_motion(a.motion)
     policy = OnnxPolicy(a.policy)
-    meta_problems = check_metadata(cfg, onnx_metadata(a.onnx_meta)) if a.onnx_meta else []
+    meta_problems = (check_metadata(cfg, onnx_metadata(a.onnx_meta)) if a.onnx_meta
+                     else ["not checked: pass --onnx-meta <run>.onnx (deploy_pkg does)"])
     fk = check_motion_fk(cfg, motion, a.motion, a.xml)
     if fk > 0.02:
         meta_problems.append(f"motion npz body poses disagree with FK of its joint_pos by {fk:.3f} m (joint order?)")

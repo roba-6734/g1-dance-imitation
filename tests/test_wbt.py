@@ -91,6 +91,7 @@ def test_generated_deploy_yaml_roundtrip(cfg):
                                               "joint_pos_rel", "joint_vel_rel", "last_action"]
     assert check_metadata(cfg, meta()) == []
     assert check_metadata(cfg, meta(default=np.zeros(29)))  # a mismatching default pose is reported
+    assert any("lacks" in m for m in check_metadata(cfg, {}))  # no metadata is a failure, not a silent pass
     with pytest.raises(ValueError, match="No-State-Estimation"):
         deploy_yaml_from_metadata({**meta(), "observation_names": ["command", "motion_anchor_pos_b"]})
 
