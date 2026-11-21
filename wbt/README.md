@@ -12,7 +12,9 @@ Nothing here commands the robot. Robot motion goes through `g1dance trial` (part
 | Verified (CPU container, 2026-11-21) | Still open |
 | --- | --- |
 | The sim-to-sim port of `State_Mimic.cpp` runs **Unitree's own shipped dance policy** stably in every deterministic scenario and in 10/10 randomised runs (first 15 s). Body error 2.8 cm, joint RMS 0.098 rad. | Training on the A5000. Nothing has been trained in this repo yet. |
-| Negative control: a wrong default pose or action scale keeps the shipped policy upright, but tracking error rises 2–3×. The joint RMS gate and the metadata check both catch it. | Running NMR inference. Hugging Face was blocked here, so `nmr_driver.py` has not been executed. The conversion and joint order are tested against NMR's code. |
+| Negative control: a wrong default pose or action scale keeps the shipped policy upright, but tracking error rises 2–3×. The joint RMS gate and the metadata check both catch it. | NMR on **your Ayyala video**. So far it has only run on NMR's own AMASS examples, packaged as GVHMR output. |
+| **NMR end to end (CPU, real checkpoint):** `nmr_driver.py` output is identical to NMR's own `inference.py`. MuJoCo FK of our SDK-order conversion matches NMR's body positions to **0.0 mm**; skipping the remap gives 393 mm. CPU inference takes ~0.16 s for 86 frames. | |
+| NMR output is **not joint-limit bounded**: on its run-turn example, left ankle roll is 0.083 rad past its stop on 7% of frames. `video2ref.nmr` clamps to the hard range and records the clamp in `validation.json`. GMR's IK already respects limits. | |
 | Model gains equal Unitree's `deploy.yaml` (kp 40.2/99.1/28.5/14.3/16.8). The motion `.npz` FK matches to 7e-7 m. `wbt.npz` matches mjlab's `csv_to_npz` to p99 0.1 mm. | Compiling the C++ safety patch. It applies cleanly to `1425b15f` but needs the Unitree SDK toolchain. |
 | Tools work with mujoco 4.0.1 and 3.5.0 (the mjlab pin). | Any hardware run. |
 

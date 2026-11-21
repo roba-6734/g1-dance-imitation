@@ -59,6 +59,19 @@ def nmr_to_qpos(raw: dict) -> np.ndarray:
     return check_qpos(np.concatenate([np.asarray(raw["root_trans"], float), quat, sdk], axis=1))
 
 
+def clamp_to_limits(qpos: np.ndarray, limits: np.ndarray):
+    """NMR is a network: unlike GMR's IK nothing bounds its joints. Clamp to the hard range and report.
+    (Seen on NMR's own run-turn example: left ankle roll 0.083 rad past its stop on 7 % of frames.)"""
+    q = qpos.copy()
+    lo, hi = np.asarray(limits, float).T
+    over = np.maximum(lo - q[:, 7:], q[:, 7:] - hi)
+    report = {G1_JOINT_NAMES[j]: {"max_over_rad": round(float(over[:, j].max()), 4),
+                                  "frames": int((over[:, j] > 0).sum())}
+              for j in range(29) if over[:, j].max() > 0}
+    q[:, 7:] = np.clip(q[:, 7:], lo, hi)
+    return q, report
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -117,19 +130,29 @@ def main(argv=None):
         manifest.write_text(json.dumps(source, indent=2))
     with np.load(raw_path) as z:
         raw = {k: z[k] for k in z.files}
-    qpos = nmr_to_qpos(raw)
-    save_formats(qpos, 30, list(G1_JOINT_NAMES), out)
+    raw_qpos = nmr_to_qpos(raw)
     model, names, limits, xml = model_and_limits(a.xml)
+    qpos, clamp = clamp_to_limits(raw_qpos, limits)
+    if clamp:
+        print("clamped NMR joints past their hard range:", ", ".join(f"{k} {v['max_over_rad']} rad" for k, v in clamp.items()))
+    save_formats(qpos, 30, list(G1_JOINT_NAMES), out)
     from .validate import validate
 
     report = validate(qpos, 30, names, limits, model)
-    report.update({"retargeter": "NMR", "nmr_commit": str(raw.get("nmr_commit", "")),
+    report["raw_validation"] = validate(raw_qpos, 30, names, limits, model)
+    report.update({"retargeter": "NMR", "joint_limit_clamp": clamp, "nmr_commit": str(raw.get("nmr_commit", "")),
                    "nmr_post_filter_5hz": bool(raw.get("filtered", True)), "gvhmr_prediction": str(pred),
                    "robot_model": str(xml), "qpos_root_quaternion_order": "wxyz", "joint_order": "SDK/MJCF"})
     (out / "validation.json").write_text(json.dumps(report, indent=2))
     upper = out / "reference_upper_50hz.npz"
-    summary = export_upper(out / "qpos.npy", upper, a.upper_smooth_window, overwrite=True)
-    print(f"NMR qpos {qpos.shape} -> {out / 'qpos.npy'}; upper reference {summary['frames']} frames at 50 Hz")
+    print(f"NMR qpos {qpos.shape} -> {out / 'qpos.npy'}")
+    try:
+        summary = export_upper(out / "qpos.npy", upper, a.upper_smooth_window, overwrite=True)
+    except ValueError as exc:  # arm_sdk release screen: keep the full-body outputs for wbt.prepare
+        print(f"upper-body (arm_sdk) export refused: {exc}\n"
+              f"qpos.npy is still usable for the whole-body path: python -m wbt.prepare --qpos {out / 'qpos.npy'} ...")
+        return 2
+    print(f"upper reference {summary['frames']} frames at 50 Hz -> {upper}")
     if video and Path(video).is_file():
         from .pipeline import write_g1dance_assets
 
@@ -146,4 +169,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

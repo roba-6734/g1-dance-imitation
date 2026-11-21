@@ -83,3 +83,15 @@ def test_compare_runs_reads_g1dance_run_dirs(tmp_path):
     a, b = rep["measured"]["GMR"], rep["measured"]["NMR"]
     assert a["measured_smoothness"]["all"]["rms_jerk"] > b["measured_smoothness"]["all"]["rms_jerk"]
     assert a["tracking_rms_deg_mean"] == 1.5 and a["median_lag_s"] == 0.05
+
+
+def test_clamp_to_limits_reports_and_bounds():
+    from video2ref.nmr import clamp_to_limits
+
+    q = np.zeros((4, 36))
+    q[:, 3] = 1
+    q[2, 7 + 5] = 0.35  # left ankle roll past its 0.2618 rad stop
+    limits = np.tile([-0.2618, 0.2618], (29, 1))
+    out, rep = clamp_to_limits(q, limits)
+    assert out[2, 7 + 5] == 0.2618 and rep == {"left_ankle_roll_joint": {"max_over_rad": 0.0882, "frames": 1}}
+    assert q[2, 7 + 5] == 0.35  # input untouched
